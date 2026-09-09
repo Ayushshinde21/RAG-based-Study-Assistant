@@ -14,4 +14,4 @@ def build_bm25_retriever(docs: list[Document], k: int = 10) -> BM25Retriever:
     retriever.k = k
 
     print(f"✅ BM25 index built! {len(docs)} chunks indexed")
-    return retriever
+    return retriever 
