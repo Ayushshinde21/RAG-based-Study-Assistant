@@ -63,4 +63,4 @@ def get_dense_retriever(vector_store: Chroma, k: int = 10):
     return vector_store.as_retriever(
         search_type="similarity",
         search_kwargs={"k": k}
-    )
+    ) 
