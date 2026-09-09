@@ -118,4 +118,4 @@ def chunk_from_file(transcript_path: str,
     print("-" * 50)
     print(f"Metadata: {docs[0].metadata if docs else {}}")
 
-    return docs
+    return docs 
