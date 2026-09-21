@@ -1,4 +1,96 @@
 import os
+import shutil
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+
+# persistent storage folder
+CHROMA_DIR = "chroma_db"
+
+# shared embeddings instance — loaded once, reused everywhere
+_embeddings_instance = None
+
+
+def get_embeddings():
+    """
+    Load HuggingFace embedding model.
+    Reuses the same instance across calls instead of reloading each time.
+    """
+    global _embeddings_instance
+    if _embeddings_instance is None:
+        _embeddings_instance = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"}
+        )
+    return _embeddings_instance
+
+
+def clear_vector_store():
+    """
+    Delete the existing ChromaDB folder completely.
+    Call this before processing a new lecture so old chunks
+    don't mix with the new one.
+    """
+    if os.path.exists(CHROMA_DIR):
+        shutil.rmtree(CHROMA_DIR)
+        print("🗑️  Cleared previous vector store")
+
+
+def build_vector_store(docs: list[Document], reset: bool = True) -> Chroma:
+    """
+    Build ChromaDB vector store from documents.
+    Saves to disk so it persists between runs.
+
+    reset=True (default) wipes any previous lecture's data first —
+    prevents chunks from different lectures mixing in retrieval.
+    """
+    print("🔨 Building ChromaDB vector store...")
+
+    if reset:
+        clear_vector_store()
+
+    embeddings = get_embeddings()
+
+    vector_store = Chroma.from_documents(
+        documents=docs,
+        embedding=embeddings,
+        persist_directory=CHROMA_DIR,
+        collection_name="lecture_chunks"
+    )
+
+    print(f"✅ Vector store built! {len(docs)} chunks indexed")
+    return vector_store
+
+
+def load_vector_store() -> Chroma:
+    """
+    Load existing ChromaDB from disk.
+    """
+    if not os.path.exists(CHROMA_DIR):
+        raise FileNotFoundError("No vector store found. Run build first.")
+
+    embeddings = get_embeddings()
+
+    vector_store = Chroma(
+        persist_directory=CHROMA_DIR,
+        embedding_function=embeddings,
+        collection_name="lecture_chunks"
+    )
+
+    print(f"✅ Vector store loaded from disk")
+    return vector_store
+
+
+def get_dense_retriever(vector_store: Chroma, k: int = 10):
+    """
+    Get dense retriever from vector store.
+    Returns top-k most similar chunks.
+    """
+    return vector_store.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": k}
+    )
+import os
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document

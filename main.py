@@ -12,7 +12,7 @@ from features.quiz_generator import generate_quiz, display_quiz
 
 print("Step 1: Get audio")
 # ── Step 1: Get audio ─────────────────────────────────────────────────────────
-audio = get_audio_path(r"C:\Users\xyz\Downloads\deep_learning_high_res.mp4")
+audio = get_audio_path(r"C:\Users\frmxg\Downloads\deep_learning_high_res.mp4")
 
 print("Step 2: Transcribe")
 # ── Step 2: Transcribe ────────────────────────────────────────────────────────
