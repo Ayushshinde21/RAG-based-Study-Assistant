@@ -1,3 +1,6 @@
+import argparse
+import os
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,9 +13,37 @@ from core.rag_engine import RAGEngine
 from features.summarizer import summarize
 from features.quiz_generator import generate_quiz, display_quiz
 
+
+def get_source() -> str:
+    """
+    Resolve the lecture source (local file path or URL) from, in order:
+    1. A command-line argument: python main.py <path-or-url>
+    2. The LECTURE_SOURCE environment variable (can be set in .env)
+    """
+    parser = argparse.ArgumentParser(
+        description="Process a lecture video/audio file (or YouTube URL) into a study assistant session."
+    )
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default=os.getenv("LECTURE_SOURCE"),
+        help="Path to a local video/audio file, or a YouTube URL. "
+             "Can also be set via the LECTURE_SOURCE environment variable.",
+    )
+    args = parser.parse_args()
+
+    if not args.source:
+        parser.error(
+            "No lecture source given. Pass it as an argument "
+            "(python main.py path/to/lecture.mp4) or set LECTURE_SOURCE in your .env file."
+        )
+
+    return args.source
+
+
 print("Step 1: Get audio")
 # ── Step 1: Get audio ─────────────────────────────────────────────────────────
-audio = get_audio_path(r"C:\Users\frmxg\Downloads\deep_learning_high_res.mp4")
+audio = get_audio_path(get_source())
 
 print("Step 2: Transcribe")
 # ── Step 2: Transcribe ────────────────────────────────────────────────────────

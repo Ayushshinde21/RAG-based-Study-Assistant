@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Generated data — regenerated at runtime, shouldn't be versioned
+chroma_db/
+audio_files/
+transcripts/
+cookies.txt
+
+# OS / editor
+.DS_Store
+.vscode/

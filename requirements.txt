@@ -1,13 +1,19 @@
 # Audio & Video
+# Note: also requires the `ffmpeg` binary on your system PATH
+# (used by yt-dlp's extractor and utils/audio_processor.py) --
+# that's a system install, not a pip package.
 yt-dlp
-ffmpeg-python
-openai-whisper
+faster-whisper
 
 # LangChain
 langchain
+langchain-core
 langchain-community
+langchain-text-splitters
+langchain-experimental
 langchain-huggingface
-langchain-mistralai
+langchain-groq
+langchain-chroma
 
 # Vector Store & Embeddings
 chromadb
@@ -15,9 +21,6 @@ sentence-transformers
 
 # BM25 Keyword Search
 rank-bm25
-
-# LLM
-mistralai
 
 # Evaluation
 ragas
@@ -28,5 +31,6 @@ streamlit
 
 # Utilities
 python-dotenv
+requests
 tqdm
 numpy
