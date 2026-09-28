@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 
 def get_llm():
     return ChatGroq(
-        model="groq/compound",  # replace with your working model
+        model="openai/gpt-oss-20b",  # replace with your working model
         api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.5,   # slightly higher for variety
     )
