@@ -95,10 +95,12 @@ class RAGEngine:
                 else:
                     raise e
 
-    def answer(self, query: str) -> str:
+    def answer_with_sources(self, query: str, use_memory: bool = True):
         """
         Main entry point.
         Takes a student question → retrieves → reranks → generates answer.
+        Returns (answer, reranked_docs) so the UI can show real sources
+        and evaluation can score exactly what the answer was built from.
         """
         from core.hybrid_retriever import hybrid_retrieve
         from core.reranker import rerank
@@ -117,11 +119,12 @@ class RAGEngine:
         reranked = rerank(query, retrieved, top_n=5)
 
         # Step 3 — Get chat history
-        messages = self.memory.messages[-MEMORY_WINDOW:]
         chat_history = ""
-        for msg in messages:
-            role = "Student" if msg.type == "human" else "Assistant"
-            chat_history += f"{role}: {msg.content}\n"
+        if use_memory:
+            messages = self.memory.messages[-MEMORY_WINDOW:]
+            for msg in messages:
+                role = "Student" if msg.type == "human" else "Assistant"
+                chat_history += f"{role}: {msg.content}\n"
 
         # Step 4 — Build prompt
         prompt = build_prompt(query, reranked, chat_history)
@@ -132,10 +135,16 @@ class RAGEngine:
         answer = response.content.strip()
 
         # Step 6 — Save to memory
-        self.memory.add_user_message(query)
-        self.memory.add_ai_message(answer)
+        if use_memory:
+            self.memory.add_user_message(query)
+            self.memory.add_ai_message(answer)
 
         print(f"✅ Answer generated!")
+        return answer, reranked
+
+    def answer(self, query: str) -> str:
+        """Back-compat wrapper — returns just the answer text."""
+        answer, _ = self.answer_with_sources(query)
         return answer
 
     def reset_memory(self):

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import html
+from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -251,6 +252,7 @@ def init_session():
         "chat_history": [],
         "transcript_path": None,
         "page": "Dashboard",
+        "quiz_submitted": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -326,8 +328,6 @@ with st.sidebar:
     for label, icon in [
         ("Dashboard", "⌂"),
         ("My Lectures", "▣"),
-        ("Recent", "◷"),
-        ("Favorites", "☆"),
     ]:
         is_active = st.session_state.page == label
         if st.button(f"{icon}  {label}", use_container_width=True, key=f"nav_{label}",
@@ -337,29 +337,16 @@ with st.sidebar:
 
     st.markdown("**CURRENT LECTURE**")
     if st.session_state.processed:
-        if st.button("●  Active lecture", use_container_width=True, key="current_lecture"):
-            set_page("Chat")
+        is_active = st.session_state.page == "Workspace"
+        if st.button("●  Study workspace", use_container_width=True, key="current_lecture",
+                     type="primary" if is_active else "secondary"):
+            set_page("Workspace")
             st.rerun()
         st.caption(f"{len(st.session_state.docs or [])} indexed chunks")
     else:
         st.caption("Upload a lecture to begin.")
 
-    st.markdown("**STUDY**")
-    for label, icon in [
-        ("Chat", "◌"),
-        ("Summary", "≡"),
-        ("Quiz", "✓"),
-        ("Evaluation", "◉"),
-    ]:
-        is_active = st.session_state.page == label
-        if st.button(f"{icon}  {label}", use_container_width=True, key=f"study_{label}",
-                     type="primary" if is_active else "secondary"):
-            set_page(label)
-            st.rerun()
-
     st.markdown("---")
-    if st.button("⚙  Settings & Model", use_container_width=True, key="settings"):
-        st.info("Settings panel can be connected to your model/provider configuration here.")
 
     if st.session_state.processed:
         if st.button("↻  Reset workspace", use_container_width=True, key="reset"):
@@ -371,19 +358,22 @@ with st.sidebar:
 # -----------------------------------------------------------------------------
 # Processing function
 # -----------------------------------------------------------------------------
-def process_uploaded_file(uploaded_file):
+def process_uploaded_file(source):
+    """source is either a Streamlit UploadedFile or a YouTube URL string."""
     tmp_path = None
     audio_path = None
+    is_url = isinstance(source, str)
     try:
-        suffix = "." + uploaded_file.name.split(".")[-1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
+        if not is_url:
+            suffix = "." + source.name.split(".")[-1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(source.read())
+                tmp_path = tmp.name
 
         with st.status("Building your study workspace...", expanded=True) as status:
             st.write("🎵 Extracting audio")
             from utils.audio_processor import get_audio_path
-            audio_path = get_audio_path(tmp_path)
+            audio_path = get_audio_path(source if is_url else tmp_path)
 
             st.write("📝 Transcribing lecture")
             from utils.transcriber import transcribe, save_transcript
@@ -414,7 +404,7 @@ def process_uploaded_file(uploaded_file):
             st.session_state.processed = True
             status.update(label="Workspace ready", state="complete", expanded=False)
 
-        st.session_state.page = "Chat"
+        st.session_state.page = "Workspace"
         st.success("Your lecture is ready to study.")
         st.rerun()
     except Exception as e:
@@ -435,9 +425,18 @@ def process_uploaded_file(uploaded_file):
 # -----------------------------------------------------------------------------
 # Dashboard
 # -----------------------------------------------------------------------------
+def greeting_for_now():
+    hour = datetime.now().hour
+    if hour < 12:
+        return "Good morning 👋"
+    elif hour < 17:
+        return "Good afternoon 👋"
+    return "Good evening 👋"
+
+
 def render_dashboard():
     st.markdown('<div class="eyebrow">YOUR LEARNING SPACE</div>', unsafe_allow_html=True)
-    st.markdown('<div class="display">Good evening 👋</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="display">{greeting_for_now()}</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="subtitle">Bring your lectures into one calm workspace. Ask questions, build study notes, practice with quizzes, and inspect how well your RAG pipeline performs.</div>',
         unsafe_allow_html=True,
@@ -471,15 +470,29 @@ def render_dashboard():
         </div>''',
         unsafe_allow_html=True,
     )
-    uploaded = st.file_uploader(
-        "Choose a lecture file",
-        type=["mp4", "mp3", "wav", "mkv", "avi", "m4a"],
-        label_visibility="collapsed",
-        key="dashboard_upload",
-    )
-    if uploaded and not st.session_state.processed:
-        if st.button("Process lecture  →", type="primary", use_container_width=True, key="process_dashboard"):
-            process_uploaded_file(uploaded)
+    up_tab, url_tab = st.tabs(["Upload a file", "Paste a YouTube link"])
+
+    with up_tab:
+        uploaded = st.file_uploader(
+            "Choose a lecture file",
+            type=["mp4", "mp3", "wav", "mkv", "avi", "m4a"],
+            label_visibility="collapsed",
+            key="dashboard_upload",
+        )
+        if uploaded and not st.session_state.processed:
+            if st.button("Process lecture  →", type="primary", use_container_width=True, key="process_dashboard"):
+                process_uploaded_file(uploaded)
+
+    with url_tab:
+        yt_url = st.text_input(
+            "YouTube URL",
+            placeholder="https://www.youtube.com/watch?v=...",
+            label_visibility="collapsed",
+            key="dashboard_youtube_url",
+        )
+        if yt_url.strip() and not st.session_state.processed:
+            if st.button("Process from link  →", type="primary", use_container_width=True, key="process_youtube"):
+                process_uploaded_file(yt_url.strip())
 
     st.markdown('<div class="section-head"><div><h2>Study workflow</h2><p>Everything stays connected to the same indexed lecture.</p></div></div>', unsafe_allow_html=True)
     a, b, c = st.columns(3)
@@ -510,74 +523,99 @@ def render_workspace_header(title, description):
     st.markdown('<div class="eyebrow">ACTIVE LECTURE</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="display-small">{esc(title)}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="subtitle">{esc(description)}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="workspace-nav"><span class="workspace-note">Chat</span><span class="workspace-note">Summary</span><span class="workspace-note">Quiz</span><span class="workspace-note">Evaluation</span></div>', unsafe_allow_html=True)
 
 
-def render_chat():
-    if not require_processed():
+def render_sources(docs):
+    """Real retrieved chunks, shown in an expander instead of fake chips."""
+    if not docs:
         return
-    render_workspace_header("AI Lecture Chat", "Ask questions against the indexed lecture and inspect the retrieved context.")
+    with st.expander(f"📎 Sources used for this answer ({len(docs)} chunks)"):
+        for i, doc in enumerate(docs, start=1):
+            st.markdown(f"**Chunk {i}**")
+            st.caption(doc.page_content[:400] + ("…" if len(doc.page_content) > 400 else ""))
 
+
+def render_chat_tab():
     left, right = st.columns([1.8, 1], gap="large")
-    with left:
-        if not st.session_state.chat_history:
-            st.markdown('<div class="card"><div class="eyebrow">START HERE</div><div class="display-small" style="font-size:27px;margin-top:8px">What would you like to understand?</div><p class="subtitle">Try a question about the main idea, a definition, an example, or the most important takeaway.</p></div>', unsafe_allow_html=True)
-        for msg in st.session_state.chat_history:
-            content = esc(msg["content"]).replace("\n", "<br>")
-            if msg["role"] == "user":
-                st.markdown(f'<div class="chat-bubble chat-user"><strong>You</strong><br>{content}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="chat-bubble chat-ai"><strong>Assistant</strong><br>{content}<div><span class="source-chip">RAG answer</span><span class="source-chip">Lecture context</span></div></div>', unsafe_allow_html=True)
-
-        with st.form("chat_form", clear_on_submit=True):
-            query = st.text_input("Ask your lecture", placeholder="What is the main idea of this lecture?", label_visibility="collapsed")
-            submitted = st.form_submit_button("Ask assistant  →", use_container_width=True, type="primary")
-        if submitted and query.strip():
-            with st.spinner("Thinking from your lecture..."):
-                answer = st.session_state.rag.answer(query)
-            st.session_state.chat_history.append({"role": "user", "content": query})
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-            st.rerun()
-
-        if st.session_state.chat_history:
-            if st.button("Clear conversation", key="clear_chat"):
-                st.session_state.chat_history = []
-                try:
-                    st.session_state.rag.reset_memory()
-                except Exception:
-                    pass
-                st.rerun()
 
     with right:
-        st.markdown('<div class="card"><div class="eyebrow">SUGGESTED QUESTIONS</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 14px">Study prompts</h3>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><div class="eyebrow">SUGGESTED QUESTIONS</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 14px">Study prompts</h3></div>', unsafe_allow_html=True)
+        queued_prompt = None
         for prompt in [
             "Explain the core concept simply.",
             "What are the key points?",
             "Give me an example.",
             "What should I remember for an exam?",
         ]:
-            st.markdown(f'<div class="suggestion" style="margin:7px 0">{esc(prompt)}</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+            if st.button(prompt, key=f"suggest_{prompt}", use_container_width=True):
+                queued_prompt = prompt
 
-        st.markdown('<div class="card" style="margin-top:14px"><div class="eyebrow">RETRIEVAL</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 6px">Knowledge base</h3><p style="font-size:12px;color:#5b6b64">Your lecture is indexed using the existing dense + BM25 retrieval pipeline.</p><div class="stat-note">Indexed chunks</div><div class="stat-value" style="font-size:28px">' + str(len(st.session_state.docs or [])) + '</div></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="card" style="margin-top:14px"><div class="eyebrow">RETRIEVAL</div>'
+            '<h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 6px">Knowledge base</h3>'
+            '<p style="font-size:12px;color:#5b6b64">Your lecture is indexed using the existing dense + BM25 retrieval pipeline.</p>'
+            '<div class="stat-note">Indexed chunks</div><div class="stat-value" style="font-size:28px">'
+            + str(len(st.session_state.docs or [])) + '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.session_state.chat_history and st.button("Clear conversation", key="clear_chat", use_container_width=True):
+            st.session_state.chat_history = []
+            try:
+                st.session_state.rag.reset_memory()
+            except Exception:
+                pass
+            st.rerun()
+
+    with left:
+        chat_box = st.container(height=440)
+        with chat_box:
+            if not st.session_state.chat_history:
+                st.markdown(
+                    '<div class="card"><div class="eyebrow">START HERE</div>'
+                    '<div class="display-small" style="font-size:27px;margin-top:8px">What would you like to understand?</div>'
+                    '<p class="subtitle">Try a question about the main idea, a definition, an example, or the most important takeaway.</p></div>',
+                    unsafe_allow_html=True,
+                )
+            for msg in st.session_state.chat_history:
+                with st.chat_message("user" if msg["role"] == "user" else "assistant"):
+                    st.markdown(msg["content"])
+                    if msg["role"] == "assistant" and msg.get("sources"):
+                        render_sources(msg["sources"])
+
+        typed_query = st.chat_input("Ask your lecture something...")
+        query = queued_prompt or typed_query
+
+        if query:
+            with chat_box:
+                with st.chat_message("user"):
+                    st.markdown(query)
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking from your lecture..."):
+                        answer, sources = st.session_state.rag.answer_with_sources(query)
+                    st.markdown(answer)
+                    render_sources(sources)
+            st.session_state.chat_history.append({"role": "user", "content": query})
+            st.session_state.chat_history.append({"role": "assistant", "content": answer, "sources": sources})
+            st.rerun()
 
 
-def render_summary():
-    if not require_processed():
-        return
-    render_workspace_header("Lecture Summary", "Editorial study notes generated from the processed lecture.")
+def render_summary_tab():
     summary = st.session_state.summary
     if summary:
-        st.markdown('<div class="card"><div class="eyebrow">SYNTHESIS</div><div style="font-family:Newsreader;font-size:18px;line-height:1.75;margin-top:12px">' + esc(summary).replace("\n", "<br>") + '</div></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="card"><div class="eyebrow">SYNTHESIS</div>'
+            '<div style="font-family:Newsreader;font-size:18px;line-height:1.75;margin-top:12px">',
+            unsafe_allow_html=True,
+        )
+        st.markdown(summary)
+        st.markdown('</div></div>', unsafe_allow_html=True)
         st.download_button("Download study notes", data=summary, file_name="lecture_summary.txt", mime="text/plain")
     else:
         st.info("No summary is available yet.")
 
 
-def render_quiz():
-    if not require_processed():
-        return
-    render_workspace_header("Practice Quiz", "Test recall with questions generated from your lecture.")
+def render_quiz_tab():
     c1, c2 = st.columns([2, 1])
     with c1:
         num_q = st.slider("Number of questions", 3, 10, 5)
@@ -587,25 +625,55 @@ def render_quiz():
         with st.spinner("Generating questions..."):
             from features.quiz_generator import generate_quiz
             st.session_state.quiz = generate_quiz(st.session_state.docs, num_questions=num_q)
+        st.session_state.quiz_submitted = False
         st.rerun()
 
-    if st.session_state.quiz:
-        for i, q in enumerate(st.session_state.quiz):
-            if not all(k in q for k in ("question", "options", "answer", "explanation")):
-                st.warning(f"Skipped malformed question {i + 1}")
-                continue
-            st.markdown(f'<div class="card" style="margin:12px 0"><div class="eyebrow">QUESTION {i+1}</div><div class="display-small" style="font-size:25px;margin:8px 0 16px">{esc(q["question"])}</div>', unsafe_allow_html=True)
-            for key, val in q["options"].items():
-                st.markdown(f'<div class="suggestion" style="margin:7px 0"><strong>{esc(key)}.</strong> {esc(val)}</div>', unsafe_allow_html=True)
-            st.success(f'Answer: {q["answer"]}')
-            st.info(q["explanation"])
-            st.markdown('</div>', unsafe_allow_html=True)
-
-
-def render_evaluation():
-    if not require_processed():
+    quiz = st.session_state.quiz
+    if not quiz:
         return
-    render_workspace_header("RAGAS Evaluation", "Measure how faithfully and precisely your RAG system answers lecture questions.")
+
+    valid_quiz = [q for q in quiz if all(k in q for k in ("question", "options", "answer", "explanation"))]
+    if len(valid_quiz) < len(quiz):
+        st.warning(f"Skipped {len(quiz) - len(valid_quiz)} malformed question(s).")
+
+    with st.form("quiz_form"):
+        picks = {}
+        for i, q in enumerate(valid_quiz):
+            st.markdown(
+                f'<div class="card" style="margin:12px 0"><div class="eyebrow">QUESTION {i+1}</div>'
+                f'<div class="display-small" style="font-size:22px;margin:8px 0 12px">{esc(q["question"])}</div></div>',
+                unsafe_allow_html=True,
+            )
+            options = q["options"]
+            picks[i] = st.radio(
+                f"q_{i}", list(options.keys()),
+                format_func=lambda k, opts=options: f"{k}. {opts[k]}",
+                key=f"quiz_pick_{i}", label_visibility="collapsed",
+            )
+        submitted = st.form_submit_button("Submit answers  →", use_container_width=True, type="primary")
+
+    if submitted:
+        st.session_state.quiz_submitted = True
+
+    if st.session_state.get("quiz_submitted"):
+        correct = sum(1 for i, q in enumerate(valid_quiz) if picks[i] == q["answer"])
+        st.markdown(
+            f'<div class="metric-ring" style="max-width:260px;margin-bottom:16px">'
+            f'<div class="metric-number">{correct}/{len(valid_quiz)}</div>'
+            f'<div class="metric-label">Correct answers</div></div>',
+            unsafe_allow_html=True,
+        )
+        for i, q in enumerate(valid_quiz):
+            is_right = picks[i] == q["answer"]
+            if is_right:
+                st.success(f"Q{i+1}: Correct")
+            else:
+                st.error(f"Q{i+1}: Your answer {picks[i]} — correct answer {q['answer']}")
+            st.caption(q["explanation"])
+
+
+def render_evaluation_tab():
+    st.caption("Measure how faithfully and precisely your RAG system answers lecture questions.")
     with st.form("eval_form"):
         st.markdown('<div class="card"><div class="eyebrow">TEST SET</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0">Add evaluation questions</h3>', unsafe_allow_html=True)
         q1 = st.text_input("Question 1")
@@ -656,21 +724,33 @@ def render_evaluation():
                 st.markdown(f'<div class="card"><div class="stat-label">{esc(label)}</div><div class="stat-value" style="font-size:26px">{esc(value)}</div></div>', unsafe_allow_html=True)
 
 
+def render_workspace():
+    if not require_processed():
+        return
+    render_workspace_header("Study Workspace", "Chat, review notes, practice, and check retrieval quality — all on the same indexed lecture.")
+
+    tab_chat, tab_summary, tab_quiz, tab_eval = st.tabs(["💬 Chat", "≡ Summary", "✓ Quiz", "◉ Evaluation"])
+    with tab_chat:
+        render_chat_tab()
+    with tab_summary:
+        render_summary_tab()
+    with tab_quiz:
+        render_quiz_tab()
+    with tab_eval:
+        render_evaluation_tab()
+
+
 def render_my_lectures():
     st.markdown('<div class="eyebrow">LIBRARY</div>', unsafe_allow_html=True)
     st.markdown('<div class="display-small">My Lectures</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitle">This version keeps lecture state in the active Streamlit session. Persistent multi-lecture history can be added later.</div>', unsafe_allow_html=True)
     if st.session_state.processed:
         st.markdown('<div class="card" style="margin-top:24px"><div class="lecture-icon">📚</div><div class="lecture-title">Current processed lecture</div><div class="lecture-meta">Indexed and ready for chat, summary, quiz and evaluation.</div></div>', unsafe_allow_html=True)
+        if st.button("Open study workspace →", key="open_workspace_from_library"):
+            set_page("Workspace")
+            st.rerun()
     else:
         st.info("No lecture is loaded in this session. Start from Dashboard.")
-
-
-def render_simple_page(title, copy):
-    st.markdown('<div class="eyebrow">WORKSPACE</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="display-small">{esc(title)}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="subtitle">{esc(copy)}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="card" style="margin-top:24px"><div class="display-small" style="font-size:25px">Coming next</div><p class="subtitle">This navigation item is ready in the new visual system. Its persistence/model settings can be connected without changing the RAG engine.</p></div>', unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -679,17 +759,9 @@ def render_simple_page(title, copy):
 page = st.session_state.page
 if page == "Dashboard":
     render_dashboard()
-elif page == "Chat":
-    render_chat()
-elif page == "Summary":
-    render_summary()
-elif page == "Quiz":
-    render_quiz()
-elif page == "Evaluation":
-    render_evaluation()
+elif page in ("Workspace", "Chat", "Summary", "Quiz", "Evaluation"):
+    render_workspace()
 elif page == "My Lectures":
     render_my_lectures()
-elif page in ("Recent", "Favorites", "Settings & Model"):
-    render_simple_page(page, "A dedicated workspace area for your study workflow.")
 else:
     render_dashboard()
