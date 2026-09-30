@@ -23,9 +23,8 @@ def translate_hindi_to_english(hindi_text: str) -> str:
 
     # Sarvam allows max 1000 chars per request — split if needed
     chunks = _split_text(hindi_text, max_length=1000)
-    translated_chunks = []
 
-    for chunk in chunks:
+    def _translate_chunk(chunk: str) -> str:
         payload = {
             "input": chunk,
             "source_language_code": "hi-IN",
@@ -40,7 +39,18 @@ def translate_hindi_to_english(hindi_text: str) -> str:
             raise RuntimeError(f"Sarvam Translate error {response.status_code}: {response.text}")
 
         result = response.json()
-        translated_chunks.append(result.get("translated_text", ""))
+        return result.get("translated_text", "")
+
+    if len(chunks) == 1:
+        return _translate_chunk(chunks[0])
+
+    # These calls are independent, so run them in parallel; ex.map keeps
+    # results in the same order the chunks were split, so the translation
+    # still reads in the original sequence once joined.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        translated_chunks = list(ex.map(_translate_chunk, chunks))
 
     return " ".join(translated_chunks)
 

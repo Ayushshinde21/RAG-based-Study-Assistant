@@ -397,9 +397,16 @@ def process_uploaded_file(source):
             from core.rag_engine import RAGEngine
             st.session_state.rag = RAGEngine(dense_retriever, bm25_retriever)
 
-            st.write("📚 Generating study summary")
-            from features.summarizer import summarize
-            st.session_state.summary = summarize(docs)
+            # Load the CrossEncoder reranker here, while the progress panel is
+            # still showing, instead of paying its load time on the first
+            # question a student asks in chat.
+            st.write("🎯 Warming up reranker")
+            import core.reranker  # noqa: F401 — import triggers model load
+
+            # Summary generation is left for the first time the Summary tab is
+            # opened (see render_summary_tab) so "Workspace ready" doesn't wait
+            # on an LLM call the student may not need immediately.
+            st.session_state.summary = None
 
             st.session_state.processed = True
             status.update(label="Workspace ready", state="complete", expanded=False)
@@ -591,9 +598,10 @@ def render_chat_tab():
                 with st.chat_message("user"):
                     st.markdown(query)
                 with st.chat_message("assistant"):
-                    with st.spinner("Thinking from your lecture..."):
-                        answer, sources = st.session_state.rag.answer_with_sources(query)
-                    st.markdown(answer)
+                    with st.spinner("Retrieving lecture context..."):
+                        token_gen, sources, save_fn = st.session_state.rag.prepare_stream(query)
+                    answer = st.write_stream(token_gen)
+                    save_fn(answer)
                     render_sources(sources)
             st.session_state.chat_history.append({"role": "user", "content": query})
             st.session_state.chat_history.append({"role": "assistant", "content": answer, "sources": sources})
@@ -601,6 +609,11 @@ def render_chat_tab():
 
 
 def render_summary_tab():
+    if st.session_state.summary is None:
+        with st.spinner("Generating study summary..."):
+            from features.summarizer import summarize
+            st.session_state.summary = summarize(st.session_state.docs)
+
     summary = st.session_state.summary
     if summary:
         st.markdown(

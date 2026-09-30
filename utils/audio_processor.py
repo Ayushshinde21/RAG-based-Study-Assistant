@@ -18,6 +18,10 @@ def download_youtube_audio(url: str) -> str:
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": output_template,
+        # Avoids the odd characters yt-dlp sometimes keeps in video titles
+        # (curly quotes, unicode punctuation) that were causing the
+        # reconstructed filename below to mismatch what actually got saved.
+        "restrictfilenames": True,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
@@ -34,10 +38,19 @@ def download_youtube_audio(url: str) -> str:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        title = info.get("title", "audio")
-        # clean title for filename
-        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
-        audio_path = os.path.join(AUDIO_DIR, f"{safe_title}.mp3")
+        # Ask yt-dlp for the exact filename it used, instead of guessing one
+        # from info["title"] with our own sanitization — any mismatch between
+        # the two (spacing, unicode, punctuation) meant the file we looked for
+        # was never the file that got saved. The extractor writes the
+        # pre-postprocessing name; after FFmpegExtractAudio runs, only the
+        # extension changes to .mp3.
+        raw_path = ydl.prepare_filename(info)
+        audio_path = os.path.splitext(raw_path)[0] + ".mp3"
+
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(
+            f"YouTube audio download finished but expected file was not found: {audio_path}"
+        )
 
     print(f"✅ Downloaded: {audio_path}")
     return audio_path
@@ -58,8 +71,14 @@ def extract_audio_from_video(video_path: str) -> str:
     command = [
         "ffmpeg",
         "-i", str(video_path),   # input file
-        "-q:a", "0",             # best quality
         "-map", "a",             # audio only
+        # Whisper/Sarvam only need mono 16kHz — matches utils/transcriber.py's
+        # chunking format. A smaller file extracts faster and every
+        # downstream step (chunking, upload, transcription) is quicker too.
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "libmp3lame",
+        "-b:a", "64k",
         output_path,
         "-y",                    # overwrite if exists
         "-loglevel", "quiet"
@@ -94,6 +113,10 @@ def extract_audio_from_audio(audio_path: str) -> str:
     command = [
         "ffmpeg",
         "-i", str(audio_path),
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "libmp3lame",
+        "-b:a", "64k",
         output_path,
         "-y",
         "-loglevel", "quiet"

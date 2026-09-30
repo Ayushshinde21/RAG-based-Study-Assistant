@@ -3,7 +3,7 @@
 # (used by yt-dlp's extractor and utils/audio_processor.py) --
 # that's a system install, not a pip package.
 yt-dlp
-faster-whisper
+faster-whisper>=1.1.0   # needed for BatchedInferencePipeline (batched CPU transcription)
 
 # LangChain
 langchain

@@ -7,6 +7,16 @@ from utils.translator import translate_hindi_to_english
 
 model = WhisperModel("small", device="cpu", compute_type="int8")
 
+# BatchedInferencePipeline (faster-whisper >= 1.1) batches audio segments and
+# skips silence via VAD instead of decoding the whole file frame-by-frame —
+# typically 2-4x faster than the plain model on CPU for lecture-style audio.
+# Fall back to the plain model on older faster-whisper versions.
+try:
+    from faster_whisper import BatchedInferencePipeline
+    batched_model = BatchedInferencePipeline(model=model)
+except ImportError:
+    batched_model = None
+
 
 def detect_language(audio_path: str) -> str:
     _, info = model.transcribe(audio_path, beam_size=1)
@@ -16,8 +26,14 @@ def detect_language(audio_path: str) -> str:
 
 
 def transcribe_english(audio_path: str) -> str:
-    print("📝 Transcribing with Whisper (English)...")
-    segments, _ = model.transcribe(audio_path, language="en")
+    if batched_model is not None:
+        print("📝 Transcribing with Whisper (English, batched + VAD)...")
+        segments, _ = batched_model.transcribe(
+            audio_path, language="en", vad_filter=True, batch_size=16
+        )
+    else:
+        print("📝 Transcribing with Whisper (English)...")
+        segments, _ = model.transcribe(audio_path, language="en", vad_filter=True)
     transcript = " ".join([seg.text for seg in segments]).strip()
     print(f"✅ Transcription done! ({len(transcript)} characters)")
     return transcript
@@ -183,18 +199,18 @@ def _sarvam_transcribe(audio_path: str) -> str:
             chunk_duration=25,
         )
 
-        transcripts = []
+        # A 1-hour lecture is ~144 chunks. Calling Sarvam one chunk at a time
+        # made this the slowest single step in the whole pipeline. Chunks are
+        # independent API calls, so run several in parallel; ex.map keeps
+        # results in the original order.
+        from concurrent.futures import ThreadPoolExecutor
 
-        for index, chunk_path in enumerate(chunk_paths, start=1):
-            print(
-                f"📝 Sarvam transcription "
-                f"{index}/{len(chunk_paths)}..."
-            )
+        print(f"📝 Sending {len(chunk_paths)} chunks to Sarvam (parallel)...")
 
-            text = _sarvam_transcribe_single(chunk_path)
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            results = list(ex.map(_sarvam_transcribe_single, chunk_paths))
 
-            if text:
-                transcripts.append(text)
+        transcripts = [text for text in results if text]
 
         combined_text = " ".join(transcripts).strip()
 
