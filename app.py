@@ -376,9 +376,9 @@ def process_uploaded_file(source):
             audio_path = get_audio_path(source if is_url else tmp_path)
 
             st.write("📝 Transcribing lecture")
-            from utils.transcriber import transcribe, save_transcript
-            transcript = transcribe(audio_path)
-            transcript_path = save_transcript(transcript, audio_path)
+            from utils.transcriber import transcribe_with_timestamps, save_transcript
+            segments = transcribe_with_timestamps(audio_path)
+            transcript_path = save_transcript(segments, audio_path)
             st.session_state.transcript_path = transcript_path
 
             st.write("✂️ Chunking transcript")
@@ -538,7 +538,9 @@ def render_sources(docs):
         return
     with st.expander(f"📎 Sources used for this answer ({len(docs)} chunks)"):
         for i, doc in enumerate(docs, start=1):
-            st.markdown(f"**Chunk {i}**")
+            ts = doc.metadata.get("start_time_str")
+            label = f"**Chunk {i} — around {ts}**" if ts else f"**Chunk {i}**"
+            st.markdown(label)
             st.caption(doc.page_content[:400] + ("…" if len(doc.page_content) > 400 else ""))
 
 

@@ -47,8 +47,12 @@ def get_memory():
 
 def build_prompt(query: str, context_docs: list[Document],
                  chat_history: str) -> str:
+    def _label(doc, i):
+        ts = doc.metadata.get("start_time_str")
+        return f"[Chunk {i+1} — around {ts}]" if ts else f"[Chunk {i+1}]"
+
     context = "\n\n".join([
-        f"[Chunk {i+1}]:\n{doc.page_content}"
+        f"{_label(doc, i)}:\n{doc.page_content}"
         for i, doc in enumerate(context_docs)
     ])
 
@@ -56,6 +60,9 @@ def build_prompt(query: str, context_docs: list[Document],
 Your job is to answer student questions based ONLY on the lecture content provided below.
 If the answer is not in the lecture content, say "I could not find this in the lecture."
 Do not make up information.
+When a chunk includes a timestamp (e.g. "around 14:32"), you may mention it in
+your answer (e.g. "this is covered around 14:32") so the student can find it
+in the recording — but never invent a timestamp for a chunk that has none.
 
 --- LECTURE CONTENT ---
 {context}

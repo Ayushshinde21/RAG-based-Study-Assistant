@@ -25,9 +25,13 @@ def evaluate_rag(
     """
     print("📊 Running RAGAS evaluation...")
 
-    # tell RAGAS to use Groq instead of OpenAI
+    # Deliberately a different, smaller/cheaper model than the one in
+    # rag_engine.py (openai/gpt-oss-20b) — using the same model to both
+    # generate and judge an answer is a weaker evaluation (it's more likely
+    # to rate its own mistakes as fine). temperature=0.0 for consistent
+    # scoring across runs.
     groq_llm = ChatGroq(
-        model="llama-3.1-8b-instant",  # same as rag_engine.py
+        model="llama-3.1-8b-instant",
         api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.0,
     )
@@ -89,9 +93,6 @@ def quick_evaluate(rag_engine, test_qa: list[dict]) -> dict:
         ...
     ]
     """
-    from core.hybrid_retriever import hybrid_retrieve
-    from core.reranker import rerank
-
     questions     = []
     answers       = []
     contexts      = []
@@ -101,17 +102,12 @@ def quick_evaluate(rag_engine, test_qa: list[dict]) -> dict:
         q  = qa["question"]
         gt = qa["ground_truth"]
 
-        # get answer from RAG engine
-        answer = rag_engine.answer(q)
-
-        # get contexts used
-        retrieved = hybrid_retrieve(
-            q,
-            rag_engine.dense_retriever,
-            rag_engine.bm25_retriever,
-            top_n=5
-        )
-        reranked = rerank(q, retrieved, top_n=3)
+        # Use answer_with_sources so RAGAS scores the exact same context the
+        # answer was generated from — the old code re-retrieved separately
+        # with different top_n values (5→3 vs the engine's own 10→5), so the
+        # "contexts" it scored were never what actually produced the answer.
+        # use_memory=False also keeps these test questions out of chat history.
+        answer, reranked = rag_engine.answer_with_sources(q, use_memory=False)
         ctx = [doc.page_content for doc in reranked]
 
         questions.append(q)
