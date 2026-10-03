@@ -26,6 +26,17 @@ def detect_language(audio_path: str) -> str:
 
 
 def transcribe_english(audio_path: str) -> str:
+    """Back-compat: plain text only, no timestamps."""
+    segments = transcribe_english_segments(audio_path)
+    return " ".join(s["text"] for s in segments).strip()
+
+
+def transcribe_english_segments(audio_path: str) -> list[dict]:
+    """
+    Same as transcribe_english but keeps each segment's start/end time —
+    Whisper returns these for free, we just weren't keeping them before.
+    Needed so chat answers can cite "see 14:32" instead of just quoting text.
+    """
     if batched_model is not None:
         print("📝 Transcribing with Whisper (English, batched + VAD)...")
         segments, _ = batched_model.transcribe(
@@ -34,21 +45,45 @@ def transcribe_english(audio_path: str) -> str:
     else:
         print("📝 Transcribing with Whisper (English)...")
         segments, _ = model.transcribe(audio_path, language="en", vad_filter=True)
-    transcript = " ".join([seg.text for seg in segments]).strip()
-    print(f"✅ Transcription done! ({len(transcript)} characters)")
-    return transcript
+
+    result = [
+        {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+        for seg in segments if seg.text.strip()
+    ]
+    total_chars = sum(len(s["text"]) for s in result)
+    print(f"✅ Transcription done! ({total_chars} characters, {len(result)} segments)")
+    return result
 
 
 def transcribe_hindi(audio_path: str) -> str:
-    print("📝 Transcribing with Sarvam AI (Hindi)...")
+    """Back-compat: plain text only, no timestamps."""
+    segments = transcribe_hindi_segments(audio_path)
+    return " ".join(s["text"] for s in segments).strip()
 
-    hindi_text = _sarvam_transcribe(audio_path)
+
+def transcribe_hindi_segments(audio_path: str) -> list[dict]:
+    """
+    Same as transcribe_hindi but keeps a timestamp per 25-second Sarvam
+    chunk (coarser than Whisper's segment-level timestamps, but still
+    enough to cite "around 14:30" in an answer).
+    """
+    print("📝 Transcribing with Sarvam AI (Hindi)...")
+    hindi_chunks = _sarvam_transcribe_chunks(audio_path)
 
     print("🔄 Translating Hindi → English...")
-    english_text = translate_hindi_to_english(hindi_text)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        english_texts = list(ex.map(
+            lambda c: translate_hindi_to_english(c["text"]), hindi_chunks
+        ))
 
-    print(f"✅ Done! ({len(english_text)} characters)")
-    return english_text
+    result = [
+        {"start": c["start"], "end": c["end"], "text": text.strip()}
+        for c, text in zip(hindi_chunks, english_texts) if text.strip()
+    ]
+    total_chars = sum(len(s["text"]) for s in result)
+    print(f"✅ Done! ({total_chars} characters, {len(result)} segments)")
+    return result
 
 
 def _get_audio_duration(audio_path: str) -> float:
@@ -181,23 +216,25 @@ def _sarvam_transcribe_single(audio_path: str) -> str:
     return transcript
 
 
-def _sarvam_transcribe(audio_path: str) -> str:
+def _sarvam_transcribe_chunks(audio_path: str, chunk_duration: int = 25) -> list[dict]:
+    """
+    Splits audio into fixed-duration chunks, transcribes each via Sarvam in
+    parallel, and returns them WITH their start/end time (chunk index *
+    chunk_duration). This is the shared building block behind both
+    _sarvam_transcribe() (plain text) and transcribe_hindi_segments()
+    (timestamped).
+    """
     duration = _get_audio_duration(audio_path)
 
     if duration <= 30:
         print("🎙️ Audio is under 30 seconds. Sending directly to Sarvam...")
-        return _sarvam_transcribe_single(audio_path)
+        text = _sarvam_transcribe_single(audio_path)
+        return [{"start": 0.0, "end": duration, "text": text}] if text else []
 
-    print(
-        f"🎙️ Long audio detected: {duration / 60:.2f} minutes"
-    )
+    print(f"🎙️ Long audio detected: {duration / 60:.2f} minutes")
 
     with tempfile.TemporaryDirectory(prefix="sarvam_chunks_") as temp_dir:
-        chunk_paths = _split_audio(
-            audio_path,
-            temp_dir,
-            chunk_duration=25,
-        )
+        chunk_paths = _split_audio(audio_path, temp_dir, chunk_duration=chunk_duration)
 
         # A 1-hour lecture is ~144 chunks. Calling Sarvam one chunk at a time
         # made this the slowest single step in the whole pipeline. Chunks are
@@ -210,20 +247,37 @@ def _sarvam_transcribe(audio_path: str) -> str:
         with ThreadPoolExecutor(max_workers=6) as ex:
             results = list(ex.map(_sarvam_transcribe_single, chunk_paths))
 
-        transcripts = [text for text in results if text]
+        chunks = [
+            {
+                "start": i * chunk_duration,
+                "end": min((i + 1) * chunk_duration, duration),
+                "text": text,
+            }
+            for i, text in enumerate(results) if text
+        ]
 
-        combined_text = " ".join(transcripts).strip()
+        print(f"✅ Sarvam transcription completed ({len(chunks)} chunks)")
+        return chunks
 
-        print(
-            f"✅ Sarvam transcription completed "
-            f"({len(transcripts)} chunks, "
-            f"{len(combined_text)} characters)"
-        )
 
-        return combined_text
+def _sarvam_transcribe(audio_path: str) -> str:
+    """Back-compat: plain combined text, no timestamps."""
+    chunks = _sarvam_transcribe_chunks(audio_path)
+    return " ".join(c["text"] for c in chunks).strip()
 
 
 def transcribe(audio_path: str) -> str:
+    """Back-compat: plain text only, no timestamps."""
+    segments = transcribe_with_timestamps(audio_path)
+    return " ".join(s["text"] for s in segments).strip()
+
+
+def transcribe_with_timestamps(audio_path: str) -> list[dict]:
+    """
+    Main entry point. Returns a list of {"start", "end", "text"} segments
+    instead of one joined string, so downstream chunking can attach a
+    timestamp to every chunk and chat answers can cite "see 14:32".
+    """
     if not os.path.exists(audio_path):
         raise FileNotFoundError(
             f"Audio file not found: {audio_path}"
@@ -232,31 +286,41 @@ def transcribe(audio_path: str) -> str:
     lang = detect_language(audio_path)
 
     if lang == "hi":
-        return transcribe_hindi(audio_path)
+        return transcribe_hindi_segments(audio_path)
     else:
-        return transcribe_english(audio_path)
+        return transcribe_english_segments(audio_path)
 
 
-def save_transcript(text: str, audio_path: str) -> str:
+def format_timestamp(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def save_transcript(segments, audio_path: str) -> str:
+    """
+    Writes one timestamped line per segment, e.g. "[05:20] ...text...".
+    core/chunker.py parses this format so every chunk can keep an
+    approximate start time. Accepts a plain string too (old call signature)
+    for backward compatibility — in that case no timestamps are written.
+    """
     os.makedirs("transcripts", exist_ok=True)
 
-    base = os.path.splitext(
-        os.path.basename(audio_path)
-    )[0]
+    base = os.path.splitext(os.path.basename(audio_path))[0]
+    output_path = os.path.join("transcripts", f"{base}.txt")
 
-    output_path = os.path.join(
-        "transcripts",
-        f"{base}.txt"
-    )
+    if isinstance(segments, str):
+        content = segments
+    else:
+        content = "\n".join(
+            f"[{format_timestamp(s['start'])}] {s['text']}"
+            for s in segments if s.get("text", "").strip()
+        )
 
-    with open(
-        output_path,
-        "w",
-        encoding="utf-8"
-    ) as f:
-        f.write(text)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(content)
 
     print(f"💾 Transcript saved: {output_path}")
 
     return output_path
-

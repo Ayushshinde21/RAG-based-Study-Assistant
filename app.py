@@ -253,6 +253,7 @@ def init_session():
         "transcript_path": None,
         "page": "Dashboard",
         "quiz_submitted": False,
+        "current_lecture_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -321,6 +322,7 @@ with st.sidebar:
         st.session_state.summary = None
         st.session_state.quiz = None
         st.session_state.chat_history = []
+        st.session_state.current_lecture_id = None
         st.session_state.page = "Dashboard"
         st.rerun()
 
@@ -387,11 +389,28 @@ def process_uploaded_file(source):
             st.session_state.docs = docs
 
             st.write("🔎 Building hybrid search index")
-            from core.vector_store import build_vector_store, get_dense_retriever
+            from core.vector_store import (
+                build_vector_store, get_dense_retriever,
+                new_collection_name, register_lecture,
+            )
             from core.bm25_index import build_bm25_retriever
-            vector_store = build_vector_store(docs, reset=True)
+
+            # Each lecture gets its own collection instead of one shared
+            # collection that gets wiped on every upload — so past lectures
+            # survive and can be reopened from "My Lectures".
+            collection_name = new_collection_name()
+            vector_store = build_vector_store(docs, reset=True, collection_name=collection_name)
             dense_retriever = get_dense_retriever(vector_store, k=10)
             bm25_retriever = build_bm25_retriever(docs, k=10)
+
+            lecture_title = os.path.splitext(os.path.basename(audio_path))[0]
+            lecture_id = register_lecture(
+                title=lecture_title,
+                collection_name=collection_name,
+                num_chunks=len(docs),
+                transcript_path=transcript_path,
+            )
+            st.session_state.current_lecture_id = lecture_id
 
             st.write("🤖 Initializing RAG engine")
             from core.rag_engine import RAGEngine
@@ -755,17 +774,72 @@ def render_workspace():
         render_evaluation_tab()
 
 
+def open_lecture(lecture: dict):
+    """Reopen a previously processed lecture without re-running the pipeline —
+    loads its existing Chroma collection and rebuilds BM25 from the same
+    chunks (BM25's retriever only lives in memory, so it can't be persisted
+    the way the vector store can)."""
+    from core.vector_store import load_vector_store, get_all_docs_from_store, get_dense_retriever
+    from core.bm25_index import build_bm25_retriever
+    from core.rag_engine import RAGEngine
+
+    with st.spinner(f"Opening “{lecture['title']}”..."):
+        vector_store = load_vector_store(lecture["collection_name"])
+        docs = get_all_docs_from_store(vector_store)
+        dense_retriever = get_dense_retriever(vector_store, k=10)
+        bm25_retriever = build_bm25_retriever(docs, k=10)
+
+        st.session_state.docs = docs
+        st.session_state.rag = RAGEngine(dense_retriever, bm25_retriever)
+        st.session_state.transcript_path = lecture.get("transcript_path")
+        st.session_state.current_lecture_id = lecture["id"]
+        st.session_state.summary = None
+        st.session_state.quiz = None
+        st.session_state.quiz_submitted = False
+        st.session_state.chat_history = []
+        st.session_state.processed = True
+
+    set_page("Workspace")
+    st.rerun()
+
+
 def render_my_lectures():
+    from core.vector_store import list_lectures, delete_lecture
+
     st.markdown('<div class="eyebrow">LIBRARY</div>', unsafe_allow_html=True)
     st.markdown('<div class="display-small">My Lectures</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">This version keeps lecture state in the active Streamlit session. Persistent multi-lecture history can be added later.</div>', unsafe_allow_html=True)
-    if st.session_state.processed:
-        st.markdown('<div class="card" style="margin-top:24px"><div class="lecture-icon">📚</div><div class="lecture-title">Current processed lecture</div><div class="lecture-meta">Indexed and ready for chat, summary, quiz and evaluation.</div></div>', unsafe_allow_html=True)
-        if st.button("Open study workspace →", key="open_workspace_from_library"):
-            set_page("Workspace")
-            st.rerun()
-    else:
-        st.info("No lecture is loaded in this session. Start from Dashboard.")
+    st.markdown('<div class="subtitle">Every lecture you\'ve processed, saved on disk so you can reopen it without re-transcribing.</div>', unsafe_allow_html=True)
+
+    lectures = list_lectures()
+    if not lectures:
+        st.info("No lectures processed yet. Start from Dashboard.")
+        return
+
+    for lecture in lectures:
+        is_current = lecture["id"] == st.session_state.current_lecture_id
+        with st.container():
+            st.markdown(
+                '<div class="card" style="margin-top:16px">'
+                f'<div class="lecture-icon">📚</div>'
+                f'<div class="lecture-title">{esc(lecture["title"])}'
+                + (' <span class="source-chip">Currently open</span>' if is_current else '')
+                + '</div>'
+                f'<div class="lecture-meta">{esc(lecture["num_chunks"])} indexed chunks · processed {esc(lecture["created_at"][:16].replace("T", " "))}</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                if st.button("Open →", key=f"open_{lecture['id']}", use_container_width=True,
+                             disabled=is_current):
+                    open_lecture(lecture)
+            with c2:
+                if st.button("Delete", key=f"delete_{lecture['id']}", use_container_width=True):
+                    delete_lecture(lecture["id"])
+                    if is_current:
+                        st.session_state.processed = False
+                        st.session_state.current_lecture_id = None
+                    st.rerun()
 
 
 # -----------------------------------------------------------------------------
