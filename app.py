@@ -28,10 +28,10 @@ _LIGHT_VARS = """
         --line-strong: #dfe0d8;
         --ink: #1b1c19;
         --muted: #5b6b64;
-        --soft: #7a8c84;
+        --soft: #5f716a;
         --forest: #173f35;
         --forest-dark: #002920;
-        --forest-text: #173f35;
+        --forest-text: #ffffff;
         --sage: #caead7;
         --sage-2: #a6cfc1;
         --amber: #fae191;
@@ -48,7 +48,7 @@ _DARK_VARS = """
         --line-strong: #40474d;
         --ink: #f2f1ea;
         --muted: #a9b3ae;
-        --soft: #8b968f;
+        --soft: #9aa5a0;
         --forest: #7fcbb0;
         --forest-dark: #b7e9d3;
         --forest-text: #101312;
@@ -79,14 +79,22 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap');
 
     html { font-size: 16px; }
-    html, body, [class*="css"] {
+    .stApp, .stApp button, .stApp input, .stApp textarea {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .stApp {
         font-size: 15px;
         color: var(--ink);
+        background: var(--ivory);
         -webkit-font-smoothing: antialiased;
+        transition: background .2s ease, color .2s ease;
     }
-    p, span, div, label, li { color: var(--ink); }
-    .stApp { background: var(--ivory); color: var(--ink); transition: background .2s ease, color .2s ease; }
+    /* Keep Streamlit's Material icons from turning into raw text */
+    [data-testid="stIconMaterial"], .material-symbols-rounded {
+        font-family: 'Material Symbols Rounded' !important;
+    }
+    .stMarkdown, .stMarkdown p, .stMarkdown li, label, [data-testid="stWidgetLabel"] p { color: var(--ink); }
+    .stCaption, [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted); }
     .main .block-container { max-width: 1480px; padding: 5.5rem 2.5rem 3rem; }
 
     /* Hide Streamlit chrome */
@@ -97,7 +105,7 @@ st.markdown(
     /* Sidebar */
     [data-testid="stSidebar"] {
         background: var(--paper-2);
-        border-right: 1px solid rgba(192,200,196,.55);
+        border-right: 1px solid var(--line);
     }
     [data-testid="stSidebar"] > div:first-child { padding-top: 1rem; }
     [data-testid="stSidebarContent"] { padding: 0 1rem 1rem; }
@@ -117,33 +125,27 @@ st.markdown(
         color: var(--ink);
         border-color: transparent;
     }
-    [data-testid="stSidebar"] .new-lecture + div .stButton > button,
-    .primary-btn button {
-        background: var(--forest) !important;
-        color: white !important;
-        border: 1px solid var(--forest) !important;
-        text-align: center !important;
-        justify-content: center !important;
-    }
     [data-testid="stSidebar"] .stButton > button[kind="primary"] {
         background: var(--sage) !important;
         color: var(--forest-dark) !important;
         border: 1px solid var(--sage-2) !important;
         font-weight: 600;
     }
+    .nav-label {
+        color: var(--soft); text-transform: uppercase; letter-spacing: .1em;
+        font-size: 11px; font-weight: 700; margin: 18px 0 6px;
+    }
 
-    /* Top bar */
+    /* Top bar (status only; brand lives in the sidebar) */
     .topbar {
         position: fixed; top: 0; left: 0; right: 0; height: 58px; z-index: 99;
         background: color-mix(in srgb, var(--ivory) 92%, transparent); backdrop-filter: blur(12px);
-        border-bottom: 1px solid rgba(192,200,196,.42);
-        display: flex; align-items: center; justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: flex-end;
         padding: 0 2.5rem;
+        pointer-events: none;
     }
-    .brand { display:flex; align-items:center; gap:10px; font-family:'Plus Jakarta Sans'; font-weight:700; }
-    .brand-mark { width:30px; height:30px; border-radius:9px; background:var(--forest); color:#fff; display:grid; place-items:center; font-size:15px; }
-    .brand-name { letter-spacing:-.02em; }
-    .top-meta { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:12px; }
+    .top-meta { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:12px; pointer-events:auto; }
     .status-pill { padding:6px 10px; border:1px solid var(--line); border-radius:999px; background:var(--paper); }
 
     /* Typography */
@@ -153,51 +155,38 @@ st.markdown(
     .eyebrow { color:var(--forest); text-transform:uppercase; letter-spacing:.11em; font-size:11px; font-weight:700; }
 
     /* Cards */
-    .card {
+    .card, .st-key-summary_card, .st-key-continue_card,
+    [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] {
         background:var(--paper); border:1px solid var(--line); border-radius:16px;
-        padding:20px; box-shadow:none;
+        box-shadow:none;
     }
+    .card { padding:20px; }
+    .st-key-summary_card, .st-key-continue_card { padding:22px 24px; }
     .card:hover { border-color: var(--sage-2); }
     .stat-card { min-height:116px; }
-    .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--soft); font-weight:700; }
-    .stat-value { font-family:'Newsreader'; font-size:32px; line-height:1.1; margin-top:10px; }
-    .stat-note { font-size:11px; color:var(--muted); margin-top:5px; }
+    .stat-label { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--soft); font-weight:700; }
+    .stat-value { font-family:'Newsreader'; font-size:32px; line-height:1.1; margin-top:10px; color:var(--ink); }
+    .stat-note { font-size:12px; color:var(--muted); margin-top:5px; }
+    .card-copy { font-size:13px; color:var(--muted); line-height:1.6; }
+    .card-title { font-family:'Newsreader'; font-size:24px; margin:8px 0 4px; color:var(--ink); }
 
-    .lecture-card { min-height:185px; position:relative; overflow:hidden; }
     .lecture-icon { width:44px; height:44px; border-radius:12px; background:var(--sage); display:grid; place-items:center; font-size:21px; }
-    .lecture-title { font-family:'Plus Jakarta Sans'; font-weight:700; font-size:15px; margin-top:16px; color:var(--ink); }
-    .lecture-meta { color:var(--soft); font-size:13px; margin-top:6px; }
-    .progress-track { height:6px; background:var(--line); border-radius:999px; overflow:hidden; margin-top:15px; }
-    .progress-fill { height:100%; background:var(--forest); border-radius:999px; }
+    .lecture-title { font-family:'Plus Jakarta Sans'; font-weight:700; font-size:15px; margin-top:14px; color:var(--ink); }
+    .lecture-meta { color:var(--soft); font-size:13px; margin:6px 0 10px; }
 
-    /* Upload */
-    .upload-shell { background:var(--paper); border:1px dashed var(--line-strong); border-radius:18px; padding:42px 28px; text-align:center; }
-    .upload-symbol { width:58px; height:58px; margin:0 auto 15px; border-radius:16px; background:var(--sage); display:grid; place-items:center; font-size:26px; }
-    .upload-title { font-family:'Newsreader'; font-size:28px; }
-    .upload-copy { color:var(--muted); font-size:13px; margin:6px auto 18px; }
-    .format-row { display:flex; justify-content:center; gap:7px; flex-wrap:wrap; }
-    .format-chip { border:1px solid var(--line); background:var(--paper-2); border-radius:999px; padding:5px 9px; font-size:10px; color:var(--muted); }
+    /* Upload header (the real uploader sits right below it) */
+    .upload-shell { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:26px 28px; margin-bottom:14px; }
+    .upload-title { font-family:'Newsreader'; font-size:26px; color:var(--ink); }
+    .upload-copy { color:var(--muted); font-size:13px; margin:6px 0 14px; }
+    .format-row { display:flex; gap:7px; flex-wrap:wrap; }
+    .format-chip { border:1px solid var(--line); background:var(--paper-2); border-radius:999px; padding:4px 10px; font-size:12px; color:var(--muted); }
 
     /* Section header */
     .section-head { display:flex; align-items:end; justify-content:space-between; gap:20px; margin:30px 0 14px; }
-    .section-head h2 { font-family:'Newsreader'; font-size:26px; font-weight:500; margin:0; }
+    .section-head h2 { font-family:'Newsreader'; font-size:26px; font-weight:500; margin:0; color:var(--ink); }
     .section-head p { color:var(--muted); font-size:12px; margin:4px 0 0; }
 
-    /* Workspace navigation */
-    .workspace-nav { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:12px 0 24px; }
-    .workspace-note { font-size:13px; color:var(--muted); padding:9px 2px 11px; }
-
-    /* Chat */
-    .chat-bubble { padding:14px 16px; border:1px solid var(--line); border-radius:14px; margin:10px 0; line-height:1.7; font-size:15px; color:var(--ink); }
-    .chat-user { background:var(--paper-2); margin-left:10%; }
-    .chat-ai { background:var(--paper); margin-right:10%; }
-    .source-chip { display:inline-block; margin-top:8px; margin-right:5px; padding:4px 8px; border-radius:999px; background:var(--amber); color:var(--amber-ink); font-size:10px; }
-    .suggestion { border:1px solid var(--line); border-radius:10px; padding:9px 11px; color:var(--muted); background:var(--paper); font-size:12px; }
-
-    /* Study note */
-    .note { border-left:4px solid var(--forest); background:var(--paper); border-radius:0 14px 14px 0; border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:18px 20px; margin:12px 0; }
-    .note h4 { font-family:'Plus Jakarta Sans'; font-size:14px; margin:0 0 7px; }
-    .note p { font-family:'Newsreader'; font-size:17px; line-height:1.65; margin:0; }
+    .source-chip { display:inline-block; margin-left:6px; padding:3px 9px; border-radius:999px; background:var(--amber); color:var(--amber-ink); font-size:12px; font-weight:500; }
 
     /* Metrics */
     .metric-ring { border:1px solid var(--line); border-radius:16px; padding:18px; background:var(--paper); text-align:center; }
@@ -210,20 +199,87 @@ st.markdown(
         color:var(--ink) !important;
     }
     .stTextInput input::placeholder, .stTextArea textarea::placeholder { color: var(--soft) !important; opacity: 1; }
-    .stMarkdown, .stCaption, [data-testid="stCaptionContainer"] { color: var(--muted); }
     .stSlider [data-baseweb="slider"] { color:var(--forest); }
     .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
         border-radius:9px; border:1px solid var(--line); background:var(--paper); color:var(--ink);
         font-family:'Plus Jakarta Sans'; font-size:13px; min-height:38px;
     }
     .stButton > button:hover, .stDownloadButton > button:hover { border-color:var(--sage-2); color:var(--forest); }
+
+    /* Global primary buttons (main area, forms) */
+    .stButton > button[kind="primary"],
+    .stFormSubmitButton > button[kind="primary"] {
+        background: var(--forest) !important;
+        color: var(--forest-text) !important;
+        border: 1px solid var(--forest) !important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stFormSubmitButton > button[kind="primary"]:hover { filter: brightness(1.08); color: var(--forest-text) !important; }
+    /* "New Lecture" in the sidebar is a solid primary CTA, unlike the sage active-nav state */
+    [data-testid="stSidebar"] .st-key-nav_new .stButton > button[kind="primary"] {
+        background: var(--forest) !important;
+        color: var(--forest-text) !important;
+        border: 1px solid var(--forest) !important;
+        justify-content: center !important;
+        font-weight: 600;
+    }
+
     div[data-testid="stFileUploader"] section { border:1px dashed var(--line-strong); border-radius:14px; background:var(--paper-2); }
     div[data-testid="stFileUploader"] section, div[data-testid="stFileUploader"] small { color: var(--muted); }
     .stProgress > div > div > div > div { background:var(--forest); }
 
-    /* Theme toggle */
-    .theme-toggle-row .stButton > button {
-        font-size: 12px; min-height: 34px;
+    /* Tabs */
+    .stTabs [data-baseweb="tab"] { color: var(--muted); }
+    .stTabs [aria-selected="true"] { color: var(--ink); }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--forest); }
+    .stTabs [data-baseweb="tab-border"] { background-color: var(--line); }
+
+    /* Expanders and chat */
+    [data-testid="stExpander"] details { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+    [data-testid="stExpander"] summary, [data-testid="stExpander"] summary p { color: var(--ink); }
+    [data-testid="stChatMessage"] { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; }
+
+    /* ---- Contrast fixes ---- */
+    /* Button labels are <p> tags inside .stMarkdown, so the global ink color was
+       overriding the button's own color (dark-on-dark / light-on-light). */
+    .stButton button p, .stDownloadButton button p, .stFormSubmitButton button p,
+    [data-testid="stPopover"] button p, [data-testid="stFileUploader"] button p {
+        color: inherit !important;
+    }
+    /* Hover states: keep label readable against its own background */
+    [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+        color: var(--forest-dark) !important; background: var(--sage) !important;
+    }
+    [data-testid="stSidebar"] .st-key-nav_new .stButton > button[kind="primary"]:hover {
+        color: var(--forest-text) !important; background: var(--forest) !important;
+    }
+    /* Popovers (Delete confirm), dropdown menus and toasts follow the custom theme */
+    [data-baseweb="popover"] > div, [data-testid="stPopoverBody"] {
+        background: var(--paper) !important; color: var(--ink) !important;
+        border: 1px solid var(--line);
+    }
+    [data-testid="stPopoverBody"] p, [data-testid="stPopoverBody"] span { color: var(--ink) !important; }
+    [data-baseweb="menu"], [data-baseweb="menu"] li { background: var(--paper) !important; color: var(--ink) !important; }
+    [data-testid="stToast"], [data-testid="stToast"] * {
+        background: var(--paper) !important; color: var(--ink) !important;
+    }
+    [data-testid="stToast"] { border: 1px solid var(--line); border-radius: 12px; }
+    /* File uploader text sits on --paper-2 */
+    [data-testid="stFileUploaderDropzoneInstructions"] span,
+    [data-testid="stFileUploaderDropzoneInstructions"] small { color: var(--muted) !important; }
+    [data-testid="stFileUploaderFileName"] { color: var(--ink) !important; }
+    [data-testid="stFileUploader"] button {
+        background: var(--paper) !important; color: var(--ink) !important;
+        border: 1px solid var(--line) !important;
+    }
+    /* Chat input */
+    [data-testid="stBottom"], [data-testid="stBottom"] > div { background: var(--ivory) !important; }
+    [data-testid="stChatInput"] { background: var(--paper) !important; border: 1px solid var(--line); border-radius: 12px; }
+    [data-testid="stChatInput"] textarea { color: var(--ink) !important; background: transparent !important; }
+    [data-testid="stChatInput"] textarea::placeholder { color: var(--soft) !important; }
+    /* Slider value labels */
+    [data-testid="stSliderThumbValue"], [data-testid="stTickBarMin"], [data-testid="stTickBarMax"] {
+        color: var(--ink) !important;
     }
 
     /* Responsive */
@@ -231,8 +287,6 @@ st.markdown(
         .main .block-container { padding: 5rem 1rem 2rem; }
         .topbar { padding:0 1rem; }
         .display { font-size:36px; }
-        .chat-user { margin-left:0; }
-        .chat-ai { margin-right:0; }
     }
     </style>
     """,
@@ -254,6 +308,7 @@ def init_session():
         "page": "Dashboard",
         "quiz_submitted": False,
         "current_lecture_id": None,
+        "just_processed": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -273,8 +328,11 @@ def set_page(name):
 
 
 def reset_app():
+    keep = {"theme": st.session_state.get("theme", "light")}
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+    for k, v in keep.items():
+        st.session_state[k] = v
     st.rerun()
 
 
@@ -285,10 +343,6 @@ lecture_state = "Lecture ready" if st.session_state.processed else "No lecture l
 st.markdown(
     f"""
     <div class="topbar">
-        <div class="brand">
-            <div class="brand-mark">✦</div>
-            <div class="brand-name">AI RAG Study Assistant</div>
-        </div>
         <div class="top-meta">
             <span class="status-pill">● {lecture_state}</span>
             <span class="status-pill">Study workspace</span>
@@ -305,17 +359,19 @@ with st.sidebar:
     st.markdown("### 🎓 AI RAG Study Assistant")
     st.caption("Academic Editorial Workspace")
 
-    st.markdown('<div class="theme-toggle-row">', unsafe_allow_html=True)
-    toggle_label = "☀️  Light mode" if st.session_state.theme == "dark" else "🌙  Dark mode"
-    if st.button(toggle_label, use_container_width=True, key="theme_toggle"):
-        st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
+    is_dark = st.session_state.theme == "dark"
+    if st.button(
+        "Light mode" if is_dark else "Dark mode",
+        icon=":material/light_mode:" if is_dark else ":material/dark_mode:",
+        use_container_width=True, key="theme_toggle",
+    ):
+        st.session_state.theme = "light" if is_dark else "dark"
         st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
-    st.markdown('<div class="new-lecture"></div>', unsafe_allow_html=True)
-    if st.button("＋  New Lecture", use_container_width=True, key="nav_new"):
+    if st.button("New Lecture", icon=":material/add:", use_container_width=True,
+                 key="nav_new", type="primary"):
         st.session_state.processed = False
         st.session_state.docs = None
         st.session_state.rag = None
@@ -326,22 +382,22 @@ with st.sidebar:
         st.session_state.page = "Dashboard"
         st.rerun()
 
-    st.markdown("**WORKSPACE**")
+    st.markdown('<div class="nav-label">Workspace</div>', unsafe_allow_html=True)
     for label, icon in [
-        ("Dashboard", "⌂"),
-        ("My Lectures", "▣"),
+        ("Dashboard", ":material/home:"),
+        ("My Lectures", ":material/library_books:"),
     ]:
         is_active = st.session_state.page == label
-        if st.button(f"{icon}  {label}", use_container_width=True, key=f"nav_{label}",
+        if st.button(label, icon=icon, use_container_width=True, key=f"nav_{label}",
                      type="primary" if is_active else "secondary"):
             set_page(label)
             st.rerun()
 
-    st.markdown("**CURRENT LECTURE**")
+    st.markdown('<div class="nav-label">Current lecture</div>', unsafe_allow_html=True)
     if st.session_state.processed:
         is_active = st.session_state.page == "Workspace"
-        if st.button("●  Study workspace", use_container_width=True, key="current_lecture",
-                     type="primary" if is_active else "secondary"):
+        if st.button("Study workspace", icon=":material/school:", use_container_width=True,
+                     key="current_lecture", type="primary" if is_active else "secondary"):
             set_page("Workspace")
             st.rerun()
         st.caption(f"{len(st.session_state.docs or [])} indexed chunks")
@@ -351,7 +407,7 @@ with st.sidebar:
     st.markdown("---")
 
     if st.session_state.processed:
-        if st.button("↻  Reset workspace", use_container_width=True, key="reset"):
+        if st.button("Reset workspace", icon=":material/refresh:", use_container_width=True, key="reset"):
             reset_app()
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -431,7 +487,9 @@ def process_uploaded_file(source):
             status.update(label="Workspace ready", state="complete", expanded=False)
 
         st.session_state.page = "Workspace"
-        st.success("Your lecture is ready to study.")
+        # st.success() right before st.rerun() is never visible; the toast is
+        # shown on the next run instead (see render_workspace).
+        st.session_state.just_processed = True
         st.rerun()
     except Exception as e:
         st.error(f"Processing failed: {e}")
@@ -483,42 +541,55 @@ def render_dashboard():
                 unsafe_allow_html=True,
             )
 
-    st.markdown('<div class="section-head"><div><h2>Bring your lecture to life</h2><p>Upload a recording and turn it into a searchable knowledge base.</p></div></div>', unsafe_allow_html=True)
-    st.markdown(
-        '''<div class="upload-shell">
-            <div class="upload-symbol">↥</div>
-            <div class="upload-title">Drop your lecture here</div>
-            <div class="upload-copy">Upload a video or audio recording. The assistant will transcribe, chunk, index, and summarize it.</div>
-            <div class="format-row">
-                <span class="format-chip">MP4</span><span class="format-chip">MP3</span><span class="format-chip">WAV</span>
-                <span class="format-chip">MKV</span><span class="format-chip">AVI</span><span class="format-chip">M4A</span>
-            </div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
-    up_tab, url_tab = st.tabs(["Upload a file", "Paste a YouTube link"])
-
-    with up_tab:
-        uploaded = st.file_uploader(
-            "Choose a lecture file",
-            type=["mp4", "mp3", "wav", "mkv", "avi", "m4a"],
-            label_visibility="collapsed",
-            key="dashboard_upload",
+    if st.session_state.processed:
+        st.markdown('<div class="section-head"><div><h2>Continue studying</h2><p>Your lecture is loaded and ready.</p></div></div>', unsafe_allow_html=True)
+        with st.container(key="continue_card"):
+            st.markdown(
+                '<div class="eyebrow">ACTIVE LECTURE</div>'
+                '<div class="display-small" style="margin:6px 0 4px">Pick up where you left off</div>'
+                f'<div class="card-copy">{len(st.session_state.docs or [])} indexed chunks are ready for chat, notes and quizzes. '
+                'Use “New Lecture” in the sidebar to upload another recording.</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Open study workspace  →", type="primary", key="continue_btn"):
+                set_page("Workspace")
+                st.rerun()
+    else:
+        st.markdown('<div class="section-head"><div><h2>Bring your lecture to life</h2><p>Upload a recording and turn it into a searchable knowledge base.</p></div></div>', unsafe_allow_html=True)
+        st.markdown(
+            '''<div class="upload-shell">
+                <div class="upload-title">Add a lecture</div>
+                <div class="upload-copy">Upload a video or audio recording, or paste a YouTube link. The assistant will transcribe, chunk, index, and summarize it.</div>
+                <div class="format-row">
+                    <span class="format-chip">MP4</span><span class="format-chip">MP3</span><span class="format-chip">WAV</span>
+                    <span class="format-chip">MKV</span><span class="format-chip">AVI</span><span class="format-chip">M4A</span>
+                </div>
+            </div>''',
+            unsafe_allow_html=True,
         )
-        if uploaded and not st.session_state.processed:
-            if st.button("Process lecture  →", type="primary", use_container_width=True, key="process_dashboard"):
-                process_uploaded_file(uploaded)
+        up_tab, url_tab = st.tabs(["Upload a file", "Paste a YouTube link"])
 
-    with url_tab:
-        yt_url = st.text_input(
-            "YouTube URL",
-            placeholder="https://www.youtube.com/watch?v=...",
-            label_visibility="collapsed",
-            key="dashboard_youtube_url",
-        )
-        if yt_url.strip() and not st.session_state.processed:
-            if st.button("Process from link  →", type="primary", use_container_width=True, key="process_youtube"):
-                process_uploaded_file(yt_url.strip())
+        with up_tab:
+            uploaded = st.file_uploader(
+                "Choose a lecture file",
+                type=["mp4", "mp3", "wav", "mkv", "avi", "m4a"],
+                label_visibility="collapsed",
+                key="dashboard_upload",
+            )
+            if uploaded:
+                if st.button("Process lecture  →", type="primary", use_container_width=True, key="process_dashboard"):
+                    process_uploaded_file(uploaded)
+
+        with url_tab:
+            yt_url = st.text_input(
+                "YouTube URL",
+                placeholder="https://www.youtube.com/watch?v=...",
+                label_visibility="collapsed",
+                key="dashboard_youtube_url",
+            )
+            if yt_url.strip():
+                if st.button("Process from link  →", type="primary", use_container_width=True, key="process_youtube"):
+                    process_uploaded_file(yt_url.strip())
 
     st.markdown('<div class="section-head"><div><h2>Study workflow</h2><p>Everything stays connected to the same indexed lecture.</p></div></div>', unsafe_allow_html=True)
     a, b, c = st.columns(3)
@@ -529,7 +600,7 @@ def render_dashboard():
     ]
     for col, num, title, copy in workflow:
         with col:
-            st.markdown(f'<div class="card"><div class="eyebrow">{num}</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 4px">{title}</h3><p style="font-size:13px;color:#5b6b64;line-height:1.6">{copy}</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card"><div class="eyebrow">{num}</div><div class="card-title">{title}</div><p class="card-copy">{copy}</p></div>', unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -567,7 +638,7 @@ def render_chat_tab():
     left, right = st.columns([1.8, 1], gap="large")
 
     with right:
-        st.markdown('<div class="card"><div class="eyebrow">SUGGESTED QUESTIONS</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 14px">Study prompts</h3></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><div class="eyebrow">SUGGESTED QUESTIONS</div><div class="card-title" style="margin-bottom:6px">Study prompts</div></div>', unsafe_allow_html=True)
         queued_prompt = None
         for prompt in [
             "Explain the core concept simply.",
@@ -580,8 +651,8 @@ def render_chat_tab():
 
         st.markdown(
             '<div class="card" style="margin-top:14px"><div class="eyebrow">RETRIEVAL</div>'
-            '<h3 style="font-family:Newsreader;font-size:24px;margin:8px 0 6px">Knowledge base</h3>'
-            '<p style="font-size:12px;color:#5b6b64">Your lecture is indexed using the existing dense + BM25 retrieval pipeline.</p>'
+            '<div class="card-title">Knowledge base</div>'
+            '<p class="card-copy">Your lecture is indexed using the existing dense + BM25 retrieval pipeline.</p>'
             '<div class="stat-note">Indexed chunks</div><div class="stat-value" style="font-size:28px">'
             + str(len(st.session_state.docs or [])) + '</div></div>',
             unsafe_allow_html=True,
@@ -596,7 +667,7 @@ def render_chat_tab():
             st.rerun()
 
     with left:
-        chat_box = st.container(height=440)
+        chat_box = st.container(height=580)
         with chat_box:
             if not st.session_state.chat_history:
                 st.markdown(
@@ -637,14 +708,18 @@ def render_summary_tab():
 
     summary = st.session_state.summary
     if summary:
-        st.markdown(
-            '<div class="card"><div class="eyebrow">SYNTHESIS</div>'
-            '<div style="font-family:Newsreader;font-size:18px;line-height:1.75;margin-top:12px">',
-            unsafe_allow_html=True,
-        )
-        st.markdown(summary)
-        st.markdown('</div></div>', unsafe_allow_html=True)
-        st.download_button("Download study notes", data=summary, file_name="lecture_summary.txt", mime="text/plain")
+        # Keyed container so the card actually wraps the summary content
+        # (separate st.markdown calls can't open/close one HTML div).
+        with st.container(key="summary_card"):
+            st.markdown('<div class="eyebrow">SYNTHESIS</div>', unsafe_allow_html=True)
+            st.markdown(summary)
+        d1, d2, _ = st.columns([1, 1, 3])
+        with d1:
+            st.download_button("Download .txt", data=summary, file_name="lecture_summary.txt",
+                               mime="text/plain", use_container_width=True)
+        with d2:
+            st.download_button("Download .md", data=summary, file_name="lecture_summary.md",
+                               mime="text/markdown", use_container_width=True)
     else:
         st.info("No summary is available yet.")
 
@@ -659,6 +734,9 @@ def render_quiz_tab():
         with st.spinner("Generating questions..."):
             from features.quiz_generator import generate_quiz
             st.session_state.quiz = generate_quiz(st.session_state.docs, num_questions=num_q)
+        # Clear old answers so a new quiz doesn't inherit stale radio selections
+        for key in [k for k in st.session_state.keys() if k.startswith("quiz_pick_")]:
+            del st.session_state[key]
         st.session_state.quiz_submitted = False
         st.rerun()
 
@@ -670,26 +748,32 @@ def render_quiz_tab():
     if len(valid_quiz) < len(quiz):
         st.warning(f"Skipped {len(quiz) - len(valid_quiz)} malformed question(s).")
 
-    with st.form("quiz_form"):
+    with st.form("quiz_form", border=False):
         picks = {}
         for i, q in enumerate(valid_quiz):
             st.markdown(
-                f'<div class="card" style="margin:12px 0"><div class="eyebrow">QUESTION {i+1}</div>'
-                f'<div class="display-small" style="font-size:22px;margin:8px 0 12px">{esc(q["question"])}</div></div>',
+                f'<div class="card" style="margin:12px 0 4px"><div class="eyebrow">QUESTION {i+1}</div>'
+                f'<div class="display-small" style="font-size:22px;margin:8px 0 4px">{esc(q["question"])}</div></div>',
                 unsafe_allow_html=True,
             )
             options = q["options"]
             picks[i] = st.radio(
                 f"q_{i}", list(options.keys()),
                 format_func=lambda k, opts=options: f"{k}. {opts[k]}",
+                index=None,  # nothing preselected, so unanswered != "A"
                 key=f"quiz_pick_{i}", label_visibility="collapsed",
             )
         submitted = st.form_submit_button("Submit answers  →", use_container_width=True, type="primary")
 
     if submitted:
-        st.session_state.quiz_submitted = True
+        unanswered = [i + 1 for i in range(len(valid_quiz)) if picks[i] is None]
+        if unanswered:
+            st.session_state.quiz_submitted = False
+            st.warning("Please answer every question first. Missing: " + ", ".join(f"Q{n}" for n in unanswered))
+        else:
+            st.session_state.quiz_submitted = True
 
-    if st.session_state.get("quiz_submitted"):
+    if st.session_state.get("quiz_submitted") and all(picks[i] is not None for i in range(len(valid_quiz))):
         correct = sum(1 for i, q in enumerate(valid_quiz) if picks[i] == q["answer"])
         st.markdown(
             f'<div class="metric-ring" style="max-width:260px;margin-bottom:16px">'
@@ -707,22 +791,35 @@ def render_quiz_tab():
 
 
 def render_evaluation_tab():
+    import pandas as pd
+
     st.caption("Measure how faithfully and precisely your RAG system answers lecture questions.")
     with st.form("eval_form"):
-        st.markdown('<div class="card"><div class="eyebrow">TEST SET</div><h3 style="font-family:Newsreader;font-size:24px;margin:8px 0">Add evaluation questions</h3>', unsafe_allow_html=True)
-        q1 = st.text_input("Question 1")
-        a1 = st.text_input("Expected answer 1")
-        q2 = st.text_input("Question 2")
-        a2 = st.text_input("Expected answer 2")
-        q3 = st.text_input("Question 3")
-        a3 = st.text_input("Expected answer 3")
+        st.markdown(
+            '<div class="eyebrow">TEST SET</div>'
+            '<div class="card-title" style="margin-bottom:6px">Add evaluation questions</div>'
+            '<p class="card-copy">Add as many rows as you like. Rows with an empty cell are ignored.</p>',
+            unsafe_allow_html=True,
+        )
+        edited = st.data_editor(
+            pd.DataFrame({"question": [""] * 3, "ground_truth": [""] * 3}),
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "question": st.column_config.TextColumn("Question", width="medium"),
+                "ground_truth": st.column_config.TextColumn("Expected answer", width="large"),
+            },
+            key="eval_editor",
+        )
         run_eval = st.form_submit_button("Run evaluation  →", use_container_width=True, type="primary")
-        st.markdown('</div>', unsafe_allow_html=True)
 
     if run_eval:
         test_qa = []
-        for q, a in [(q1, a1), (q2, a2), (q3, a3)]:
-            if q.strip() and a.strip():
+        for _, row in edited.iterrows():
+            q = str(row.get("question") or "").strip()
+            a = str(row.get("ground_truth") or "").strip()
+            if q and a:
                 test_qa.append({"question": q, "ground_truth": a})
         if not test_qa:
             st.warning("Please add at least one question and expected answer.")
@@ -761,6 +858,9 @@ def render_evaluation_tab():
 def render_workspace():
     if not require_processed():
         return
+    if st.session_state.get("just_processed"):
+        st.session_state.just_processed = False
+        st.toast("Your lecture is ready to study.", icon="✅")
     render_workspace_header("Study Workspace", "Chat, review notes, practice, and check retrieval quality — all on the same indexed lecture.")
 
     tab_chat, tab_summary, tab_quiz, tab_eval = st.tabs(["💬 Chat", "≡ Summary", "✓ Quiz", "◉ Evaluation"])
@@ -815,31 +915,36 @@ def render_my_lectures():
         st.info("No lectures processed yet. Start from Dashboard.")
         return
 
-    for lecture in lectures:
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    grid = st.columns(2, gap="medium")
+    for idx, lecture in enumerate(lectures):
         is_current = lecture["id"] == st.session_state.current_lecture_id
-        with st.container():
-            st.markdown(
-                '<div class="card" style="margin-top:16px">'
-                f'<div class="lecture-icon">📚</div>'
-                f'<div class="lecture-title">{esc(lecture["title"])}'
-                + (' <span class="source-chip">Currently open</span>' if is_current else '')
-                + '</div>'
-                f'<div class="lecture-meta">{esc(lecture["num_chunks"])} indexed chunks · processed {esc(lecture["created_at"][:16].replace("T", " "))}</div>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                if st.button("Open →", key=f"open_{lecture['id']}", use_container_width=True,
-                             disabled=is_current):
-                    open_lecture(lecture)
-            with c2:
-                if st.button("Delete", key=f"delete_{lecture['id']}", use_container_width=True):
-                    delete_lecture(lecture["id"])
-                    if is_current:
-                        st.session_state.processed = False
-                        st.session_state.current_lecture_id = None
-                    st.rerun()
+        with grid[idx % 2]:
+            with st.container(border=True):
+                st.markdown(
+                    '<div class="lecture-icon">📚</div>'
+                    f'<div class="lecture-title">{esc(lecture["title"])}'
+                    + (' <span class="source-chip">Currently open</span>' if is_current else '')
+                    + '</div>'
+                    f'<div class="lecture-meta">{esc(lecture["num_chunks"])} indexed chunks · processed {esc(lecture["created_at"][:16].replace("T", " "))}</div>',
+                    unsafe_allow_html=True,
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Open →", key=f"open_{lecture['id']}", use_container_width=True,
+                                 disabled=is_current):
+                        open_lecture(lecture)
+                with c2:
+                    # Deleting is permanent, so ask for confirmation first
+                    with st.popover("Delete", use_container_width=True):
+                        st.caption("This permanently removes the lecture and its index.")
+                        if st.button("Yes, delete", key=f"confirm_delete_{lecture['id']}",
+                                     type="primary", use_container_width=True):
+                            delete_lecture(lecture["id"])
+                            if is_current:
+                                st.session_state.processed = False
+                                st.session_state.current_lecture_id = None
+                            st.rerun()
 
 
 # -----------------------------------------------------------------------------
