@@ -1,4 +1,5 @@
 import os
+import tempfile
 import subprocess
 import yt_dlp
 from pathlib import Path
@@ -8,52 +9,108 @@ AUDIO_DIR = "audio_files"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 
+class YouTubeBlockedError(RuntimeError):
+    """Raised when YouTube refuses the download (403 / bot check) on every strategy."""
+
+
+def _get_cookie_file():
+    """
+    Cookies are read from a secret (never from a file committed to git).
+      - Streamlit Cloud: App settings -> Secrets -> YT_COOKIES = '''<netscape cookies>'''
+      - Local dev: set env var YT_COOKIES, or keep an untracked cookies.txt
+    Returns a path, or None if no cookies are configured.
+    """
+    data = os.getenv("YT_COOKIES")
+    if not data:
+        try:
+            import streamlit as st
+            data = st.secrets.get("YT_COOKIES")
+        except Exception:
+            data = None
+
+    if data:
+        path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data.strip() + "\n")
+        return path
+
+    return "cookies.txt" if os.path.exists("cookies.txt") else None
+
+
+def _get_proxy():
+    """Optional proxy (e.g. residential) for hosts whose IPs YouTube blocks."""
+    proxy = os.getenv("YT_PROXY")
+    if not proxy:
+        try:
+            import streamlit as st
+            proxy = st.secrets.get("YT_PROXY")
+        except Exception:
+            proxy = None
+    return proxy or None
+
+
+# YouTube blocks/changes individual player clients all the time, so instead of
+# hard-coding one (tv_embedded was returning 403), try several in order.
+_CLIENT_STRATEGIES = [None, ["tv"], ["mweb"], ["web_safari"], ["android_vr"]]
+
+
 def download_youtube_audio(url: str) -> str:
     """
     Download audio from a YouTube URL.
     Returns the path to the saved .mp3 file.
+    Raises YouTubeBlockedError if YouTube blocks every strategy.
     """
     output_template = os.path.join(AUDIO_DIR, "%(title)s.%(ext)s")
+    cookie_file = _get_cookie_file()
+    proxy = _get_proxy()
+    last_error = None
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": output_template,
-        # Avoids the odd characters yt-dlp sometimes keeps in video titles
-        # (curly quotes, unicode punctuation) that were causing the
-        # reconstructed filename below to mismatch what actually got saved.
-        "restrictfilenames": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
-        "quiet": True,
-        "cookiefile": "cookies.txt",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["tv_embedded"],  # ← change to this
-            }
-        },
-    }
+    for clients in _CLIENT_STRATEGIES:
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": output_template,
+            "restrictfilenames": True,
+            "noplaylist": True,
+            "retries": 3,
+            "socket_timeout": 30,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "quiet": True,
+            "no_warnings": True,
+            # Recent yt-dlp versions need a JS runtime to solve YouTube's
+            # challenges (nodejs is installed via packages.txt). Ignored by
+            # versions that don't know this option.
+            "js_runtimes": {"node": {}},
+        }
+        if cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
+        if proxy:
+            ydl_opts["proxy"] = proxy
+        if clients:
+            ydl_opts["extractor_args"] = {"youtube": {"player_client": clients}}
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        # Ask yt-dlp for the exact filename it used, instead of guessing one
-        # from info["title"] with our own sanitization — any mismatch between
-        # the two (spacing, unicode, punctuation) meant the file we looked for
-        # was never the file that got saved. The extractor writes the
-        # pre-postprocessing name; after FFmpegExtractAudio runs, only the
-        # extension changes to .mp3.
-        raw_path = ydl.prepare_filename(info)
-        audio_path = os.path.splitext(raw_path)[0] + ".mp3"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                raw_path = ydl.prepare_filename(info)
+                audio_path = os.path.splitext(raw_path)[0] + ".mp3"
 
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(
-            f"YouTube audio download finished but expected file was not found: {audio_path}"
-        )
+            if os.path.exists(audio_path):
+                print(f"✅ Downloaded: {audio_path} (client: {clients or 'default'})")
+                return audio_path
+            last_error = FileNotFoundError(f"Expected file not found: {audio_path}")
+        except yt_dlp.utils.DownloadError as e:
+            last_error = e
+            print(f"⚠️ yt-dlp failed with client {clients or 'default'}: {e}")
 
-    print(f"✅ Downloaded: {audio_path}")
-    return audio_path
+    raise YouTubeBlockedError(
+        "YouTube blocked the download from this server (HTTP 403 / bot check). "
+        "Please download the video yourself and use the Upload tab instead. "
+        f"Details: {last_error}"
+    )
 
 
 def extract_audio_from_video(video_path: str) -> str:
