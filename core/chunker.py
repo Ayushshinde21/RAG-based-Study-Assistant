@@ -1,8 +1,9 @@
 import os
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_experimental.text_splitter import SemanticChunker
 from langchain_core.documents import Document
-from core.vector_store import get_embeddings   # ← use shared instance
+# NOTE: SemanticChunker and get_embeddings are imported lazily inside
+# chunk_semantic(), so short transcripts (fixed chunking) never load
+# langchain_experimental / the embedding stack.
 
 
 def load_transcript(transcript_path: str) -> str:
@@ -12,7 +13,7 @@ def load_transcript(transcript_path: str) -> str:
     with open(transcript_path, "r", encoding="utf-8") as f:
         text = f.read().strip()
 
-    print(f"📄 Loaded transcript: {len(text)} characters")
+    print(f"📄 Loaded transcript: {len(text)} characters", flush=True)
     return text
 
 
@@ -34,12 +35,15 @@ def chunk_fixed(text: str, source: str = "unknown",
         for i, chunk in enumerate(chunks)
     ]
 
-    print(f"✂️  Fixed chunking: {len(docs)} chunks")
+    print(f"✂️  Fixed chunking: {len(docs)} chunks", flush=True)
     return docs
 
 
 def chunk_semantic(text: str, source: str = "unknown") -> list[Document]:
-    embeddings = get_embeddings()   # ← shared, not reloaded
+    from langchain_experimental.text_splitter import SemanticChunker  # lazy
+    from core.vector_store import get_embeddings                      # lazy
+
+    embeddings = get_embeddings()   # shared, not reloaded
 
     splitter = SemanticChunker(
         embeddings=embeddings,
@@ -58,7 +62,7 @@ def chunk_semantic(text: str, source: str = "unknown") -> list[Document]:
         for i, chunk in enumerate(chunks)
     ]
 
-    print(f"✂️  Semantic chunking: {len(docs)} chunks")
+    print(f"✂️  Semantic chunking: {len(docs)} chunks", flush=True)
     return docs
 
 
@@ -81,7 +85,7 @@ def chunk_from_file(transcript_path: str,
     source = os.path.basename(transcript_path)
 
     if len(text) < 2000:
-        print("⚠️  Short text detected — switching to fixed chunking")
+        print("⚠️  Short text detected — switching to fixed chunking", flush=True)
         method = "fixed"
 
     docs = chunk_text(text, source=source, method=method)
@@ -90,6 +94,6 @@ def chunk_from_file(transcript_path: str,
     print("-" * 50)
     print(docs[0].page_content[:300] if docs else "No chunks generated")
     print("-" * 50)
-    print(f"Metadata: {docs[0].metadata if docs else {}}")
+    print(f"Metadata: {docs[0].metadata if docs else {}}", flush=True)
 
     return docs
