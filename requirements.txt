@@ -27,10 +27,13 @@ ragas
 datasets
 
 # UI
-streamlit
+fastapi
+uvicorn[standard]
+python-multipart
 
 # Utilities
 python-dotenv
 requests
 tqdm
 numpy
+pypdf

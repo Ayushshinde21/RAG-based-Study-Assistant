@@ -1,0 +1,15 @@
+.env
+cookies.txt
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+chroma_db/
+transcripts/
+audio_files/
+lecture_titles.json
+tests/
+old/
+app.py
+*.zip

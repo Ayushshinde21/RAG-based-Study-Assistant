@@ -2,6 +2,7 @@ import os
 import math
 import tempfile
 import subprocess
+import numpy as np
 from faster_whisper import WhisperModel
 from utils.translator import translate_hindi_to_english
 
@@ -18,8 +19,26 @@ except ImportError:
     batched_model = None
 
 
-def detect_language(audio_path: str) -> str:
-    _, info = model.transcribe(audio_path, beam_size=1)
+def load_audio(audio_path: str, sr: int = 16000) -> np.ndarray:
+    """
+    Decode any audio file to 16 kHz mono float32 with the ffmpeg binary.
+    Passing this array to Whisper avoids faster-whisper's own PyAV decoder, which
+    crashes ("open() got an unexpected keyword argument 'metadata_errors'") when
+    the installed `av` version doesn't match faster-whisper.
+    """
+    cmd = ["ffmpeg", "-nostdin", "-threads", "0", "-i", audio_path,
+           "-f", "s16le", "-ac", "1", "-ar", str(sr), "-"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg was not found. Install ffmpeg and make sure it is on your PATH.")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Could not decode the audio: " + e.stderr.decode(errors="ignore")[-300:])
+    return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
+
+
+def detect_language(audio_path: str, audio=None) -> str:
+    _, info = model.transcribe(audio if audio is not None else load_audio(audio_path), beam_size=1)
     detected = info.language
     print(f"🌐 Detected language: {detected}")
     return detected
@@ -31,25 +50,36 @@ def transcribe_english(audio_path: str) -> str:
     return " ".join(s["text"] for s in segments).strip()
 
 
-def transcribe_english_segments(audio_path: str) -> list[dict]:
+def transcribe_english_segments(audio_path: str, audio=None) -> list[dict]:
     """
     Same as transcribe_english but keeps each segment's start/end time —
     Whisper returns these for free, we just weren't keeping them before.
     Needed so chat answers can cite "see 14:32" instead of just quoting text.
     """
+    if audio is None:
+        audio = load_audio(audio_path)
     if batched_model is not None:
         print("📝 Transcribing with Whisper (English, batched + VAD)...")
         segments, _ = batched_model.transcribe(
-            audio_path, language="en", vad_filter=True, batch_size=16
+            audio, language="en", vad_filter=True, batch_size=16
         )
     else:
         print("📝 Transcribing with Whisper (English)...")
-        segments, _ = model.transcribe(audio_path, language="en", vad_filter=True)
+        segments, _ = model.transcribe(audio, language="en", vad_filter=True)
 
-    result = [
-        {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
-        for seg in segments if seg.text.strip()
-    ]
+    def _collect(segs):
+        return [
+            {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+            for seg in segs if seg.text.strip()
+        ]
+
+    result = _collect(segments)
+    if not result:
+        # The silence filter (VAD) can wrongly discard everything on quiet or
+        # music-heavy audio. Retry once with it off before giving up.
+        print("⚠️ No speech found with VAD on. Retrying without VAD...")
+        segments, _ = model.transcribe(audio, language="en", vad_filter=False)
+        result = _collect(segments)
     total_chars = sum(len(s["text"]) for s in result)
     print(f"✅ Transcription done! ({total_chars} characters, {len(result)} segments)")
     return result
@@ -283,12 +313,27 @@ def transcribe_with_timestamps(audio_path: str) -> list[dict]:
             f"Audio file not found: {audio_path}"
         )
 
-    lang = detect_language(audio_path)
+    audio = load_audio(audio_path)   # decode once, reuse for detection + transcription
+    seconds = len(audio) / 16000
+    peak = float(np.abs(audio).max()) if len(audio) else 0.0
+    print(f"🔊 Audio: {seconds:.1f}s long, peak level {peak:.3f}")
+    if seconds < 1:
+        raise RuntimeError(
+            f"The audio file contains no usable audio ({seconds:.1f} seconds). "
+            "The download was probably incomplete. Try again or upload the file."
+        )
+    if peak < 0.001:
+        raise RuntimeError(
+            "The audio track is completely silent. The download may have failed "
+            "or the video has no sound. Try another video or upload the file."
+        )
+    lang = detect_language(audio_path, audio)
 
     if lang == "hi":
+        del audio
         return transcribe_hindi_segments(audio_path)
     else:
-        return transcribe_english_segments(audio_path)
+        return transcribe_english_segments(audio_path, audio)
 
 
 def format_timestamp(seconds: float) -> str:

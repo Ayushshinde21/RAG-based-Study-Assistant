@@ -1,0 +1,30 @@
+# Server dependencies for the FastAPI app (Cloud Run image).
+# torch is installed separately in the Dockerfile (CPU-only build).
+yt-dlp[default]
+faster-whisper>=1.1.0
+
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-experimental
+langchain-huggingface
+langchain-groq
+langchain-chroma
+
+chromadb
+sentence-transformers
+rank-bm25
+
+ragas
+datasets
+
+fastapi
+uvicorn[standard]
+python-multipart
+
+python-dotenv
+requests
+tqdm
+numpy
+pypdf

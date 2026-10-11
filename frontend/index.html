@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7fb">
+  <title>Campus Study Desk — Student Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script>window.API_BASE = "";</script>
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <a class="brand" href="#/dashboard" aria-label="Campus Study Desk home">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5 12 4l9 4.5-9 4.5L3 8.5Z"/><path d="M6.5 10.5v5.2c3.4 2.4 7.6 2.4 11 0v-5.2M21 9v6"/></svg></span>
+        <span class="brand-copy"><strong>Campus</strong><small>STUDY DESK</small></span>
+      </a>
+      <div class="nav-caption">YOUR SPACE</div>
+      <nav id="nav" aria-label="Main navigation">
+        <a href="#/dashboard" data-r="dashboard"><span class="nav-icon" data-icon="grid"></span><span>Dashboard</span></a>
+        <a href="#/lectures" data-r="lectures"><span class="nav-icon" data-icon="library"></span><span>My Lectures</span><span class="nav-count" id="nav-count">0</span></a>
+        <a href="#/workspace" data-r="workspace"><span class="nav-icon" data-icon="brain"></span><span>Study Workspace</span></a>
+      </nav>
+      <div class="sidebar-promo">
+        <div class="promo-orbit"><span data-icon="sparkles"></span></div>
+        <strong>Make every study hour count.</strong>
+        <p>Turn your lectures into notes, answers and practice.</p>
+        <a href="#/dashboard" class="promo-link">Start studying <span data-icon="arrow-up-right"></span></a>
+      </div>
+      <div class="side-bottom">
+        <div class="side-note"><span class="online-dot"></span><span>Built for curious minds</span></div>
+        <button id="theme" class="theme-toggle" type="button"><span data-icon="moon"></span><span class="theme-label">Dark appearance</span><span class="toggle-track"><i></i></span></button>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="topbar">
+        <div class="topbar-context"><span class="context-mark"></span><span>STUDENT PORTAL</span><span class="context-divider">/</span><span id="top-page">Overview</span></div>
+        <div class="topbar-actions">
+          <label class="global-search"><span data-icon="search"></span><input id="globalSearch" type="search" placeholder="Search your lectures..." aria-label="Search your lectures"><kbd>↵</kbd></label>
+          <button class="icon-button" id="notify" type="button" aria-label="Notifications"><span data-icon="bell"></span><i></i></button>
+          <div class="profile-chip" aria-label="Student profile"><span class="avatar">S</span><span class="profile-copy"><strong>Student</strong><small>Learning space</small></span><span class="profile-caret" data-icon="chevron-down"></span></div>
+        </div>
+      </header>
+      <main id="view" tabindex="-1"></main>
+      <footer class="page-footer"><span>© <span id="year"></span> Campus Study Desk</span><span>Learn at your own pace <span class="footer-heart">✦</span></span></footer>
+    </div>
+
+    <aside class="info" id="info" aria-label="Study overview"></aside>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="script.js"></script>
+</body>
+</html>
