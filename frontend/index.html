@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f7fb">
+  <script>try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
   <title>Campus Study Desk — Student Dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,7 +41,8 @@
       <header class="topbar">
         <div class="topbar-context"><span class="context-mark"></span><span>STUDENT PORTAL</span><span class="context-divider">/</span><span id="top-page">Overview</span></div>
         <div class="topbar-actions">
-          <label class="global-search"><span data-icon="search"></span><input id="globalSearch" type="search" placeholder="Search your lectures..." aria-label="Search your lectures"><kbd>↵</kbd></label>
+          <label class="global-search"><button type="button" class="search-icon" id="searchToggle" aria-label="Search lectures"><span data-icon="search"></span></button><input id="globalSearch" type="search" placeholder="Search your lectures..." aria-label="Search your lectures"><kbd>↵</kbd></label>
+          <button class="icon-button theme-mobile" id="themeMobile" type="button" aria-label="Switch to dark appearance" aria-pressed="false"><span data-icon="moon"></span></button>
           <button class="icon-button" id="notify" type="button" aria-label="Notifications"><span data-icon="bell"></span><i></i></button>
           <div class="profile-chip" aria-label="Student profile"><span class="avatar">S</span><span class="profile-copy"><strong>Student</strong><small>Learning space</small></span><span class="profile-caret" data-icon="chevron-down"></span></div>
         </div>

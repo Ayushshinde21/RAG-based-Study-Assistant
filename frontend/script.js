@@ -1,5 +1,11 @@
 const API = window.API_BASE || "";
 const $ = (s) => document.querySelector(s);
+// localStorage can throw (private mode, blocked cookies, quota). Never let that break the app.
+const store = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch {} },
+  remove(key) { try { localStorage.removeItem(key); } catch {} }
+};
 const ICONS = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   library: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 5.5v15A2.5 2.5 0 0 1 6.5 18H20M8 7h8M8 10h8"/>',
@@ -24,6 +30,7 @@ const ICONS = {
   compass: '<circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.7 5.7-5.7 2.7 2.7-5.7 5.7-2.7Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   'external-link': '<path d="M14 3h7v7M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  download: '<path d="M12 3v12m-5-5 5 5 5-5"/><path d="M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
   'book-mark': '<path d="M6 3h12a2 2 0 0 1 2 2v16l-8-4-8 4V5a2 2 0 0 1 2-2Z"/>',
   lightbulb: '<path d="M9 18h6M10 22h4M8 14c-1.2-1-2-2.4-2-4a6 6 0 1 1 12 0c0 1.6-.8 3-2 4-.6.5-1 1.2-1 2h-6c0-.8-.4-1.5-1-2Z"/>',
   'circle-help': '<circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.6 2.6 0 1 1 4.7 1.5c-1.2 1.1-2.2 1.4-2.2 3M12 17h.01"/>',
@@ -192,8 +199,8 @@ async function copyText(text, successMessage = "Copied to clipboard") {
   }
 }
 const fmt = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "");
-const sid = localStorage.sid || (localStorage.sid = Math.random().toString(36).slice(2, 14));
-let current = localStorage.lecture || null;
+const sid = store.get("sid") || (() => { const v = Math.random().toString(36).slice(2, 14); store.set("sid", v); return v; })();
+let current = store.get("lecture") || null;
 let lectures = [];
 let serverOnline = false;
 let pendingWorkspaceTab = null;
@@ -224,42 +231,76 @@ function toast(msg) {
 // Theme
 const root = document.documentElement;
 const themeBtn = $("#theme");
+const themeBtnMobile = $("#themeMobile");
 const syncTheme = () => {
   const dark = root.classList.contains("dark");
-  $(".theme-label").textContent = dark ? "Light appearance" : "Dark appearance";
+  const next = dark ? "Light appearance" : "Dark appearance";
+  $(".theme-label").textContent = next;
   themeBtn.querySelector("[data-icon]").innerHTML = ico(dark ? "sun" : "moon");
+  themeBtn.setAttribute("aria-pressed", dark ? "true" : "false");
+  themeBtnMobile.querySelector("[data-icon]").innerHTML = ico(dark ? "sun" : "moon");
+  themeBtnMobile.setAttribute("aria-pressed", dark ? "true" : "false");
+  themeBtnMobile.setAttribute("aria-label", "Switch to " + next.toLowerCase());
 };
-if (localStorage.theme === "dark") root.classList.add("dark");
+if (store.get("theme") === "dark") root.classList.add("dark");
 syncTheme();
-themeBtn.onclick = () => {
+const toggleTheme = () => {
   root.classList.toggle("dark");
-  localStorage.theme = root.classList.contains("dark") ? "dark" : "light";
+  store.set("theme", root.classList.contains("dark") ? "dark" : "light");
   syncTheme();
 };
+themeBtn.onclick = toggleTheme;
+themeBtnMobile.onclick = toggleTheme;
 $("#year").textContent = new Date().getFullYear();
 $("#notify").onclick = () => toast("You're all caught up. Your latest study materials appear here after processing.");
-$("#globalSearch").addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
+const searchBox = $(".global-search");
+const searchInput = $("#globalSearch");
+const searchToggle = $("#searchToggle");
+const closeSearch = () => searchBox.classList.remove("open");
+// On phones the input is collapsed to an icon; tapping the icon opens it as an overlay.
+searchToggle.addEventListener("click", () => {
+  searchBox.classList.add("open");
+  searchInput.focus();
+});
+searchInput.addEventListener("blur", () => setTimeout(closeSearch, 150));
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeSearch(); searchToggle.focus(); return; }
+  if (e.key !== "Enter" || e.isComposing) return;
   pendingSearch = e.currentTarget.value.trim();
+  closeSearch();
+  e.currentTarget.blur();
   if (location.hash.startsWith("#/lectures")) viewLibrary();
   else location.hash = "#/lectures";
 });
 
 // Router
+let routeSeq = 0;
 async function route() {
+  const seq = ++routeSeq; // a newer navigation invalidates this one
   const [, page = "dashboard", id] = location.hash.split("/");
   document.querySelector(".app")?.classList.toggle("workspace-mode", page === "workspace");
   const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace" };
   $("#top-page").textContent = labels[page] || "Overview";
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === page));
-  if (id) { current = id; localStorage.lecture = id; }
+  if (id) { current = id; store.set("lecture", id); }
+  let loadError = null;
   try {
-    lectures = await api("/lectures");
+    const data = await api("/lectures");
+    if (seq !== routeSeq) return; // user already navigated somewhere else
+    lectures = data;
     serverOnline = true;
   } catch (e) {
+    if (seq !== routeSeq) return;
     lectures = [];
     serverOnline = false;
-    toast("Can't reach the server: " + e.message);
+    loadError = e.message || "Unknown error";
+  }
+  if (loadError) {
+    $("#view").innerHTML = `<section class="load-error" role="alert"><h2>We couldn't load your lectures</h2><p>${esc(loadError)}</p><button type="button" class="btn" id="retry-load">Try again</button></section>`;
+    $("#retry-load").onclick = () => route();
+    renderInfo();
+    $("#nav-count").textContent = "–";
+    return;
   }
   const views = { dashboard: viewDashboard, lectures: viewLibrary, workspace: viewWorkspace };
   (views[page] || viewDashboard)();
@@ -505,7 +546,7 @@ function viewLibrary() {
       }
       if (del && confirm("Delete this lecture and its search index? This can't be undone.")) {
         await send("DELETE", "/lectures/" + del);
-        if (current === del) { current = null; localStorage.removeItem("lecture"); }
+        if (current === del) { current = null; store.remove("lecture"); }
         route();
       }
     } catch (err) { toast(err.message); }
@@ -532,13 +573,18 @@ function viewWorkspace() {
     </div>
     <div class="tabs workspace-tabs" role="tablist" aria-label="Study tools">${Object.keys(tabs).map((t) => `<button role="tab" aria-selected="false" data-tab="${t}"><span class="workspace-tab-icon">${ico(tabIcons[t])}</span><span>${t === "Evaluation" ? "Answer evaluation" : t}</span></button>`).join("")}</div>
     <div id="tab" class="workspace-tab-panel"></div>`;
+  const panel = $("#tab");
+  let tabSeq = 0;
   const show = (t) => {
+    const token = ++tabSeq;
     document.querySelectorAll(".workspace-tabs button").forEach((b) => {
       const active = b.dataset.tab === t;
       b.classList.toggle("on", active);
       b.setAttribute("aria-selected", active ? "true" : "false");
     });
-    tabs[t]($("#tab"));
+    // Tabs call alive() after any await; it is false once the user switched tab or left the page.
+    const alive = () => token === tabSeq && panel.isConnected;
+    tabs[t](panel, alive);
   };
   document.querySelector(".workspace-tabs").onclick = (e) => {
     const button = e.target.closest("[data-tab]");
@@ -579,7 +625,7 @@ function tabChat(el) {
       <header class="chat-workspace-header">
         <div class="chat-header-symbol">${ico("message-circle")}</div>
         <div class="chat-header-copy"><h2>Ask your lecture</h2><p>Get clear answers backed by the material you uploaded.</p></div>
-        <div class="chat-grounding-badge"><span></span> Source grounded</div>
+        <div class="chat-grounding-badge"><span></span> Based on this lecture</div>
       </header>
       <div id="log" class="log polished-chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <form id="ask" class="ask polished-composer">
@@ -601,13 +647,13 @@ function tabChat(el) {
     box.innerHTML = log.length ? log.map(msgHtml).join("") : `
       <div class="chat-empty-state">
         <div class="chat-empty-art"><span>${ico("sparkles")}</span><i></i><b></b></div>
-        <div class="chat-empty-eyebrow">YOUR PERSONAL STUDY PARTNER</div>
-        <h3>Let's make this lecture click.</h3>
-        <p>Ask for a simple explanation, work through an example, or find the ideas worth remembering.</p>
+        <div class="chat-empty-eyebrow">START A CONVERSATION</div>
+        <h3>What would you like to understand?</h3>
+        <p>Choose a prompt to get started, or write your own question below.</p>
         <div class="prompt-suggestions">
-          <button type="button" data-prompt="Explain the key concepts in this lecture in simple terms."><span>${ico("lightbulb")}</span>Explain the key concepts</button>
-          <button type="button" data-prompt="Give me a practical example from this lecture."><span>${ico("compass")}</span>Show me an example</button>
-          <button type="button" data-prompt="What are the most important points I should remember from this lecture?"><span>${ico("book-mark")}</span>What should I remember?</button>
+          <button type="button" data-prompt="Explain the key concepts in this lecture in simple terms."><span class="suggestion-icon">${ico("lightbulb")}</span><span class="suggestion-copy"><strong>Explain a concept</strong><small>Simple language, step by step</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+          <button type="button" data-prompt="Give me a practical example from this lecture."><span class="suggestion-icon">${ico("compass")}</span><span class="suggestion-copy"><strong>Show an example</strong><small>Connect theory to practice</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+          <button type="button" data-prompt="What are the most important points I should remember from this lecture?"><span class="suggestion-icon">${ico("book-mark")}</span><span class="suggestion-copy"><strong>Revise key points</strong><small>Focus on what matters most</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
         </div>
       </div>`;
     box.scrollTop = box.scrollHeight;
@@ -628,8 +674,12 @@ function tabChat(el) {
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
   });
+  const touchDevice = window.matchMedia("(pointer: coarse)").matches;
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    // Ignore Enter that confirms an IME composition (Japanese, Chinese, Korean, etc.).
+    if (event.isComposing || event.keyCode === 229) return;
+    // On phones Enter inserts a newline; the Send button submits.
+    if (event.key === "Enter" && !event.shiftKey && !touchDevice) {
       event.preventDefault();
       form.requestSubmit();
     }
@@ -702,8 +752,13 @@ function tabChat(el) {
   };
 }
 
-function tabSummary(el) {
+function tabSummary(el, alive = () => true) {
+  const lectureId = current;
+  const lec = lectures.find((l) => l.id === lectureId);
+  let loadSeq = 0;
   const load = async (refresh) => {
+    const mine = ++loadSeq;
+    const stale = () => mine !== loadSeq || !alive();
     el.innerHTML = `
       <section class="summary-loading-card">
         <div class="summary-loading-icon"><span class="processing-spinner"></span></div>
@@ -711,12 +766,13 @@ function tabSummary(el) {
         <div class="summary-skeleton"><i></i><i></i><i></i><i></i></div>
       </section>`;
     try {
-      const { summary } = await api(`/lectures/${current}/summary${refresh ? "?refresh=true" : ""}`);
+      const { summary } = await api(`/lectures/${lectureId}/summary${refresh ? "?refresh=true" : ""}`);
+      if (stale()) return;
       const text = String(summary || "").trim();
       const words = text ? text.match(/\S+/g).length : 0;
       const readingMinutes = Math.max(1, Math.ceil(words / 220));
       const sections = extractSummarySections(text);
-      const outline = sections.length ? sections.map((name, index) => `<a href="#summary-section-${index + 1}"><span>${String(index + 1).padStart(2, "0")}</span><b>${esc(name)}</b></a>`).join("") : `<a href="#summary-document"><span>01</span><b>Key ideas</b></a>`;
+      const outline = sections.length ? sections.map((name, index) => `<a href="#summary-section-${index + 1}" data-summary-target="summary-section-${index + 1}"><span>${String(index + 1).padStart(2, "0")}</span><b>${esc(name)}</b></a>`).join("") : `<a href="#summary-document" data-summary-target="summary-document"><span>01</span><b>Key ideas</b></a>`;
       el.innerHTML = `
         <section class="summary-page">
           <header class="summary-hero-card">
@@ -724,7 +780,7 @@ function tabSummary(el) {
               <div class="summary-title-icon">${ico("file-text")}</div>
               <div class="summary-title-copy"><div class="summary-kicker"><span></span> YOUR REVISION NOTES</div><h2>Lecture summary</h2><p>The key concepts, explained in a format that is easy to scan and revise.</p></div>
             </div>
-            <div class="summary-actions"><button type="button" class="summary-action-button" id="copy-summary">${ico("clipboard-check")}<span>Copy notes</span></button><button type="button" class="btn" id="re">${ico("sparkles")} Refresh summary</button></div>
+            <div class="summary-actions"><button type="button" class="summary-action-button" id="copy-summary">${ico("clipboard-check")}<span>Copy notes</span></button><button type="button" class="summary-action-button" id="download-summary">${ico("download")}<span>Download .md</span></button><button type="button" class="btn" id="re">${ico("sparkles")} Refresh</button></div>
             <div class="summary-meta-row"><span>${ico("clock")} About ${readingMinutes} min read</span><i></i><span>${ico("layers")} ${words.toLocaleString()} words</span><i></i><span>${ico("book-open")} Lecture-based notes</span></div>
           </header>
           <div class="summary-reading-layout">
@@ -733,7 +789,27 @@ function tabSummary(el) {
           </div>
           <footer class="summary-bottom-card"><div class="summary-bottom-icon">${ico("message-circle")}</div><div class="summary-bottom-copy"><strong>Want to understand a concept more deeply?</strong><p>Ask the study assistant to explain a point or walk through an example from this lecture.</p></div><button type="button" class="ghost" id="discuss-summary">Discuss with AI ${ico("arrow-up-right")}</button></footer>
         </section>`;
+      el.querySelectorAll("[data-summary-target]").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          const target = el.querySelector(`[id="${link.dataset.summaryTarget}"]`);
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
       el.querySelector("#copy-summary").onclick = () => copyText(text, "Summary copied");
+      el.querySelector("#download-summary").onclick = () => {
+        const safeTitle = String(lec?.title || "lecture").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "lecture";
+        const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${safeTitle}-summary.md`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast("Summary download started");
+      };
       el.querySelector("#re").onclick = () => load(true);
       el.querySelector("#discuss-summary").onclick = () => {
         pendingWorkspaceTab = null;
@@ -742,6 +818,7 @@ function tabSummary(el) {
         if (chatTab) chatTab.click();
       };
     } catch (error) {
+      if (stale()) return;
       el.innerHTML = `<section class="summary-error-card"><div class="summary-error-icon">${ico("circle-help")}</div><div><h3>We couldn't prepare your summary</h3><p>${esc(error.message)}</p><button type="button" class="btn" id="re">Try again</button></div></section>`;
       el.querySelector("#re").onclick = () => load(false);
     }
@@ -749,27 +826,34 @@ function tabSummary(el) {
   load(false);
 }
 
-function tabQuiz(el) {
+function tabQuiz(el, alive = () => true) {
+  const lectureId = current;
   el.innerHTML = `<div class="row"><label>Questions <select id="n">${[3, 5, 8, 10].map((n) => `<option ${n === 5 ? "selected" : ""}>${n}</option>`).join("")}</select></label><button class="btn" id="gen">Generate quiz</button></div><div id="qz"></div>`;
-  $("#gen").onclick = async () => {
-    const b = $("#gen");
-    b.disabled = true;
-    $("#qz").innerHTML = `<p class="empty">Generating questions...</p>`;
+  const out = el.querySelector("#qz");
+  const gen = el.querySelector("#gen");
+  const count = el.querySelector("#n");
+  gen.onclick = async () => {
+    gen.disabled = true;
+    out.innerHTML = `<p class="empty">Generating questions...</p>`;
     try {
-      const { questions } = await post(`/lectures/${current}/quiz`, { num_questions: +$("#n").value });
-      renderQuiz(questions.filter((q) => q.question && q.options && q.answer));
-    } catch (e) { $("#qz").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-    finally { b.disabled = false; }
+      const { questions } = await post(`/lectures/${lectureId}/quiz`, { num_questions: +count.value });
+      if (!alive()) return;
+      renderQuiz(out, questions.filter((q) => q.question && q.options && q.answer));
+    } catch (e) {
+      if (alive()) out.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    } finally { gen.disabled = false; }
   };
 }
 
-function renderQuiz(qs) {
-  if (!qs.length) { $("#qz").innerHTML = `<p class="err">No usable questions came back. Generate the quiz again.</p>`; return; }
-  $("#qz").innerHTML = `<form id="qf">${qs.map((q, i) => `<fieldset class="card"><legend>${i + 1}. ${esc(q.question)}</legend>${Object.entries(q.options).map(([k, v]) => `<label class="opt"><input type="radio" name="q${i}" value="${esc(k)}"> <b>${esc(k)}.</b> ${esc(v)}</label>`).join("")}<p class="why" hidden></p></fieldset>`).join("")}<button class="btn">Check answers</button> <span id="score"></span></form>`;
-  $("#qf").onsubmit = (e) => {
+function renderQuiz(out, qs) {
+  if (!out || !out.isConnected) return;
+  if (!qs.length) { out.innerHTML = `<p class="err">No usable questions came back. Generate the quiz again.</p>`; return; }
+  out.innerHTML = `<form id="qf">${qs.map((q, i) => `<fieldset class="card"><legend>${i + 1}. ${esc(q.question)}</legend>${Object.entries(q.options).map(([k, v]) => `<label class="opt"><input type="radio" name="q${i}" value="${esc(k)}"> <b>${esc(k)}.</b> ${esc(v)}</label>`).join("")}<p class="why" hidden></p></fieldset>`).join("")}<button class="btn">Check answers</button> <span id="score"></span></form>`;
+  const form = out.querySelector("#qf");
+  form.onsubmit = (e) => {
     e.preventDefault();
     let ok = 0;
-    const sets = document.querySelectorAll("#qf fieldset");
+    const sets = form.querySelectorAll("fieldset");
     qs.forEach((q, i) => {
       const pick = sets[i].querySelector("input:checked")?.value;
       const right = pick === q.answer;
@@ -780,32 +864,38 @@ function renderQuiz(qs) {
       w.hidden = false;
       w.textContent = (right ? "Correct. " : `Answer: ${q.answer}. `) + (q.explanation || "");
     });
-    $("#score").textContent = `You got ${ok} of ${qs.length}.`;
+    const score = form.querySelector("#score");
+    if (score) score.textContent = `You got ${ok} of ${qs.length}.`;
   };
 }
 
-function tabEval(el) {
+function tabEval(el, alive = () => true) {
+  const lectureId = current;
   el.innerHTML = `<p class="sub">Add test questions with the answer you expect. Rows missing either part are ignored.</p><div id="rows"></div><div class="row"><button class="ghost" id="add" type="button">Add row</button><button class="btn" id="run">Run evaluation</button></div><div id="res"></div>`;
+  const rows = el.querySelector("#rows");
+  const res = el.querySelector("#res");
+  const run = el.querySelector("#run");
   const addRow = () => {
     const d = document.createElement("div");
     d.className = "erow";
     d.innerHTML = `<input placeholder="Question" aria-label="Question"><input placeholder="Expected answer" aria-label="Expected answer">`;
-    $("#rows").append(d);
+    rows.append(d);
   };
   addRow(); addRow();
-  $("#add").onclick = addRow;
-  $("#run").onclick = async () => {
-    const items = [...document.querySelectorAll(".erow")].map((r) => { const [a, b] = r.querySelectorAll("input"); return { question: a.value.trim(), ground_truth: b.value.trim() }; }).filter((i) => i.question && i.ground_truth);
+  el.querySelector("#add").onclick = addRow;
+  run.onclick = async () => {
+    const items = [...rows.querySelectorAll(".erow")].map((r) => { const [a, b] = r.querySelectorAll("input"); return { question: a.value.trim(), ground_truth: b.value.trim() }; }).filter((i) => i.question && i.ground_truth);
     if (!items.length) return toast("Add at least one question with an expected answer");
-    const b = $("#run");
-    b.disabled = true;
-    $("#res").innerHTML = `<p class="empty">Running the evaluation. This can take a few minutes.</p>`;
+    run.disabled = true;
+    res.innerHTML = `<p class="empty">Running the evaluation. This can take a few minutes.</p>`;
     try {
-      const { scores, n } = await post(`/lectures/${current}/evaluate`, { items });
+      const { scores, n } = await post(`/lectures/${lectureId}/evaluate`, { items });
+      if (!alive()) return;
       const tiles = [["Faithfulness", "faithfulness"], ["Answer relevancy", "answer_relevancy"], ["Context precision", "context_precision"], ["Context recall", "context_recall"]];
-      $("#res").innerHTML = `<p class="sub">Calculated from ${n} question${n === 1 ? "" : "s"}.</p><div class="tiles">${tiles.map(([l, k]) => `<div class="tile"><b>${Number.isFinite(scores[k]) ? Math.round(scores[k] * 100) + "%" : "N/A"}</b><span>${l}</span></div>`).join("")}</div>`;
-    } catch (e) { $("#res").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-    finally { b.disabled = false; }
+      res.innerHTML = `<p class="sub">Calculated from ${n} question${n === 1 ? "" : "s"}.</p><div class="tiles">${tiles.map(([l, k]) => `<div class="tile"><b>${Number.isFinite(scores[k]) ? Math.round(scores[k] * 100) + "%" : "N/A"}</b><span>${l}</span></div>`).join("")}</div>`;
+    } catch (e) {
+      if (alive()) res.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    } finally { run.disabled = false; }
   };
 }
 
