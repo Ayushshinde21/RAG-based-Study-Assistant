@@ -53,6 +53,26 @@ function renderInline(source) {
   return html;
 }
 
+// ---- Markdown table helpers ----
+function splitTableRow(line) {
+  let text = line.trim();
+  if (text.startsWith("|")) text = text.slice(1);
+  if (text.endsWith("|") && !text.endsWith("\\|")) text = text.slice(0, -1);
+  const cells = [];
+  let cell = "", inCode = false;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k];
+    if (ch === "\\" && text[k + 1] === "|") { cell += "|"; k++; continue; }
+    if (ch === "`") inCode = !inCode;
+    if (ch === "|" && !inCode) { cells.push(cell.trim()); cell = ""; continue; }
+    cell += ch;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+const isTableSeparator = (line) => line.includes("|") && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line);
+const looksLikeTableRow = (line) => line.includes("|") && line.trim().length > 1;
+
 function renderRichText(source, options = {}) {
   const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
   const output = [];
@@ -90,7 +110,8 @@ function renderRichText(source, options = {}) {
     codeLanguage = "";
   };
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (inCode) {
       if (/^\s*```/.test(line)) {
         flushCode();
@@ -108,6 +129,26 @@ function renderRichText(source, options = {}) {
       inCode = true;
       codeLanguage = fence[1] || "";
       continue;
+    }
+
+    if (looksLikeTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const head = splitTableRow(line);
+      const aligns = splitTableRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : c.startsWith(":") ? "left" : ""));
+      if (head.length === aligns.length) {
+        flushParagraph();
+        flushList();
+        const cellTag = (tag, text, idx) => `<${tag}${aligns[idx] ? ` style="text-align:${aligns[idx]}"` : ""}>${renderInline(text)}</${tag}>`;
+        const bodyRows = [];
+        let r = i + 2;
+        while (r < lines.length && lines[r].trim() && looksLikeTableRow(lines[r])) {
+          const cells = splitTableRow(lines[r]);
+          bodyRows.push(`<tr>${head.map((_, idx) => cellTag("td", cells[idx] ?? "", idx)).join("")}</tr>`);
+          r++;
+        }
+        output.push(`<div class="rich-table-wrap" tabindex="0" role="region" aria-label="Table"><table class="rich-table"><thead><tr>${head.map((h, idx) => cellTag("th", h, idx)).join("")}</tr></thead><tbody>${bodyRows.join("")}</tbody></table></div>`);
+        i = r - 1;
+        continue;
+      }
     }
 
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
@@ -167,7 +208,11 @@ function renderRichText(source, options = {}) {
 function extractSummarySections(source) {
   const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
   const sections = [];
+  let inFence = false;
   for (const line of lines) {
+    // Lines inside ``` fences are code, not headings or list items (the renderer skips them too).
+    if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
     const heading = line.match(/^#{1,3}\s+(.+)$/);
     if (heading) {
       sections.push(heading[1].replace(/\*\*/g, "").replace(/`/g, "").trim());
@@ -546,6 +591,8 @@ function viewLibrary() {
       }
       if (del && confirm("Delete this lecture and its search index? This can't be undone.")) {
         await send("DELETE", "/lectures/" + del);
+        store.remove(chatKey(del));
+        delete chats[del];
         if (current === del) { current = null; store.remove("lecture"); }
         route();
       }
@@ -595,31 +642,155 @@ function viewWorkspace() {
   show(initialTab);
 }
 
-const msgHtml = (m, index) => {
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+const CHAT_STORE_LIMIT = 40;          // messages kept per lecture in the browser
+const chatKey = (id) => "chat:" + id;
+const streams = {};                   // lectureId -> { controller, answer } while an answer is streaming
+const chatViews = {};                 // lectureId -> currently mounted chat view
+const liveView = (id) => { const v = chatViews[id]; return v && v.box.isConnected ? v : null; };
+
+function loadChat(id) {
+  if (chats[id]) return chats[id];
+  let list = [];
+  try {
+    const parsed = JSON.parse(store.get(chatKey(id)) || "[]");
+    if (Array.isArray(parsed)) {
+      list = parsed.filter((m) => m && (m.role === "you" || m.role === "ai")).map((m) => ({
+        role: m.role,
+        text: String(m.text || ""),
+        sources: Array.isArray(m.sources) ? m.sources : [],
+        error: m.error || null,
+        status: m.status || "done",
+        question: m.question || ""
+      }));
+    }
+  } catch {}
+  // A page refresh mid-answer leaves a "streaming" message that can never finish.
+  list.forEach((m) => {
+    if (m.role === "ai" && m.status === "streaming") {
+      if (m.text) m.status = "stopped";
+      else { m.status = "error"; m.error = "This answer was interrupted. Try again."; }
+    }
+  });
+  return (chats[id] = list);
+}
+
+function saveChat(id) {
+  const log = chats[id];
+  if (!log) return;
+  if (!log.length) { store.remove(chatKey(id)); return; }
+  let tail = log.slice(-CHAT_STORE_LIMIT);
+  if (tail[0] && tail[0].role === "ai") tail = tail.slice(1); // never start mid-exchange
+  store.set(chatKey(id), JSON.stringify(tail.map(({ role, text, sources, error, status, question }) => ({ role, text, sources, error, status, question }))));
+}
+
+const plainText = (md) => String(md || "").replace(/```[\s\S]*?```/g, " code block ").replace(/[`*_#>|]/g, "").replace(/\s+/g, " ").trim();
+
+const THINKING_HTML = '<div class="thinking-state"><span></span><span></span><span></span><em>Finding an answer in your lecture…</em></div>';
+const messageContentHtml = (m) => m.text ? renderRichText(m.text) : (m.status === "streaming" ? THINKING_HTML : "");
+const messageSourcesHtml = (m) => m.sources?.length ? `
+  <details class="source-panel">
+    <summary><span class="source-summary-icon">${ico("book-open")}</span><span><strong>Sources from your lecture</strong><small>${m.sources.length} supporting passage${m.sources.length === 1 ? "" : "s"}</small></span><span class="source-chevron">${ico("chevron-down")}</span></summary>
+    <div class="source-list">${m.sources.map((source, sourceIndex) => `<article class="source-item"><div class="source-item-head"><span>PASSAGE ${String(sourceIndex + 1).padStart(2, "0")}</span>${source.time ? `<b>${ico("clock")} ${esc(source.time)}</b>` : ""}</div><p>${esc(source.text)}</p></article>`).join("")}</div>
+  </details>` : "";
+const messageErrorHtml = (m, index, canRetry) => {
+  if (m.role !== "ai" || (m.status !== "error" && m.status !== "stopped")) return "";
+  const stopped = m.status === "stopped";
+  const note = stopped ? (m.text ? "Answer stopped. What you see is only part of the answer." : "Stopped before an answer arrived.") : (m.error || "Something went wrong while generating the answer.");
+  const retry = canRetry ? `<button type="button" class="message-retry" data-retry="${index}">Try again</button>` : "";
+  return `<div class="message-error${stopped ? " is-note" : ""}" role="${stopped ? "status" : "alert"}">${ico("circle-help")}<span>${esc(note)}</span>${retry}</div>`;
+};
+const messageToolsHtml = (m, index) => m.role === "ai" && m.text && m.status !== "streaming"
+  ? `<div class="message-tools"><button type="button" class="message-tool" data-copy-answer="${index}">${ico("clipboard-check")} Copy answer</button></div>` : "";
+
+const msgHtml = (m, index, log) => {
   const isUser = m.role === "you";
-  const label = isUser ? "You" : "Study assistant";
-  const avatar = isUser ? '<span class="chat-user-mark">Y</span>' : ico("sparkles");
-  const content = m.text ? renderRichText(m.text) : (m.error ? "" : '<div class="thinking-state"><span></span><span></span><span></span><em>Finding an answer in your lecture…</em></div>');
-  const sources = m.sources?.length ? `
-    <details class="source-panel">
-      <summary><span class="source-summary-icon">${ico("book-open")}</span><span><strong>Sources from your lecture</strong><small>${m.sources.length} supporting passage${m.sources.length === 1 ? "" : "s"}</small></span><span class="source-chevron">${ico("chevron-down")}</span></summary>
-      <div class="source-list">${m.sources.map((source, sourceIndex) => `<article class="source-item"><div class="source-item-head"><span>PASSAGE ${String(sourceIndex + 1).padStart(2, "0")}</span>${source.time ? `<b>${ico("clock")} ${esc(source.time)}</b>` : ""}</div><p>${esc(source.text)}</p></article>`).join("")}</div>
-    </details>` : "";
-  const error = m.error ? `<div class="message-error">${ico("circle-help")}<span>${esc(m.error)}</span></div>` : "";
-  const tools = !isUser && m.text ? `<div class="message-tools"><button type="button" class="message-tool" data-copy-answer="${index}">${ico("clipboard-check")} Copy answer</button></div>` : "";
-  return `<article class="chat-message ${isUser ? "is-user" : "is-assistant"}">
-    <div class="chat-avatar ${isUser ? "user-avatar" : "assistant-avatar"}">${avatar}</div>
+  const canRetry = index === log.length - 1;
+  return `<article class="chat-message ${isUser ? "is-user" : "is-assistant"}" data-i="${index}">
+    <div class="chat-avatar ${isUser ? "user-avatar" : "assistant-avatar"}">${isUser ? '<span class="chat-user-mark">Y</span>' : ico("sparkles")}</div>
     <div class="chat-message-main">
-      <div class="chat-message-meta"><strong>${label}</strong>${!isUser ? '<span class="assistant-label">LECTURE-GROUNDED</span>' : ""}</div>
-      <div class="chat-bubble ${isUser ? "user-bubble" : "assistant-bubble"}"><div class="rich-content">${content}</div>${error}</div>
-      ${sources}${tools}
+      <div class="chat-message-meta"><strong>${isUser ? "You" : "Study assistant"}</strong>${!isUser ? '<span class="assistant-label">LECTURE-GROUNDED</span>' : ""}</div>
+      <div class="chat-bubble ${isUser ? "user-bubble" : "assistant-bubble"}"><div class="rich-content">${messageContentHtml(m)}</div><div class="js-error">${messageErrorHtml(m, index, canRetry)}</div></div>
+      <div class="js-sources">${messageSourcesHtml(m)}</div><div class="js-tools">${messageToolsHtml(m, index)}</div>
     </div>
   </article>`;
 };
 
+// Streams one answer into `answer`. Lives outside the tab so switching tabs doesn't cancel it.
+async function streamAnswer(lectureId, answer) {
+  const controller = new AbortController();
+  streams[lectureId] = { controller, answer };
+  answer.status = "streaming";
+  answer.error = null;
+  answer.text = "";
+  answer.sources = [];
+  liveView(lectureId)?.setBusy(true);
+
+  let frame = 0;
+  const paintText = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = 0; liveView(lectureId)?.update(answer, { text: true }); });
+  };
+  let sawDone = false;
+  const handle = (line) => {
+    const ev = JSON.parse(line);
+    if (ev.type === "sources") { answer.sources = ev.data || []; liveView(lectureId)?.update(answer, { sources: true }); }
+    else if (ev.type === "token") { answer.text += ev.data; paintText(); }
+    else if (ev.type === "error") throw new Error(ev.data);
+    else if (ev.type === "done") sawDone = true;
+  };
+
+  try {
+    const response = await fetch(`${API}/api/lectures/${lectureId}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: answer.question, session_id: sid }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const j = await response.json().catch(() => ({}));
+      throw new Error(typeof j.detail === "string" ? j.detail : response.statusText || "Request failed");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      lines.filter(Boolean).forEach(handle);
+    }
+    if (buffer.trim()) handle(buffer);
+    if (!sawDone) throw new Error("The connection closed before the answer finished.");
+    answer.status = "done";
+  } catch (error) {
+    if (error.name === "AbortError" || controller.signal.aborted) {
+      answer.status = "stopped";
+    } else {
+      answer.status = "error";
+      answer.error = error.message || "Something went wrong while generating the answer.";
+    }
+  } finally {
+    if (frame) cancelAnimationFrame(frame);
+    if (streams[lectureId]?.controller === controller) delete streams[lectureId];
+    saveChat(lectureId);
+    const view = liveView(lectureId);
+    if (view) {
+      view.update(answer, { text: true, sources: true, footer: true });
+      view.setBusy(false);
+      view.announce(answer);
+    }
+  }
+}
+
 function tabChat(el) {
-  const log = chats[current] || (chats[current] = []);
-  const lec = lectures.find((l) => l.id === current);
+  const lectureId = current;
+  const log = loadChat(lectureId);
+  const lec = lectures.find((l) => l.id === lectureId);
   el.innerHTML = `
     <section class="chat-workspace">
       <header class="chat-workspace-header">
@@ -627,11 +798,12 @@ function tabChat(el) {
         <div class="chat-header-copy"><h2>Ask your lecture</h2><p>Get clear answers backed by the material you uploaded.</p></div>
         <div class="chat-grounding-badge"><span></span> Based on this lecture</div>
       </header>
-      <div id="log" class="log polished-chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
+      <div id="log" class="log polished-chat-log" role="log" aria-live="off" aria-label="Conversation"></div>
+      <div id="chatStatus" class="sr-only" role="status" aria-live="polite"></div>
       <form id="ask" class="ask polished-composer">
         <div class="composer-box">
           <textarea id="q" rows="1" placeholder="Ask anything about this lecture…" autocomplete="off" maxlength="2000" aria-label="Your question"></textarea>
-          <div class="composer-footer"><span>${ico("book-open")} Answers are based on <b>${esc(lec?.title || "your lecture")}</b></span><button class="btn send-message" id="sendQuestion" type="submit">Send question ${ico("arrow-up-right")}</button></div>
+          <div class="composer-footer"><span>${ico("book-open")} Answers are based on <b>${esc(lec?.title || "your lecture")}</b></span><div class="composer-actions"><button type="button" class="ghost stop-message" id="stopAnswer" hidden>Stop</button><button class="btn send-message" id="sendQuestion" type="submit">Send question ${ico("arrow-up-right")}</button></div></div>
         </div>
         <button type="button" id="reset" class="new-chat-button">${ico("plus")} <span>New chat</span></button>
       </form>
@@ -642,38 +814,87 @@ function tabChat(el) {
   const input = el.querySelector("#q");
   const form = el.querySelector("#ask");
   const sendButton = el.querySelector("#sendQuestion");
-  const draw = () => {
-    if (!box.isConnected) return;
-    box.innerHTML = log.length ? log.map(msgHtml).join("") : `
-      <div class="chat-empty-state">
-        <div class="chat-empty-art"><span>${ico("sparkles")}</span><i></i><b></b></div>
-        <div class="chat-empty-eyebrow">START A CONVERSATION</div>
-        <h3>What would you like to understand?</h3>
-        <p>Choose a prompt to get started, or write your own question below.</p>
-        <div class="prompt-suggestions">
-          <button type="button" data-prompt="Explain the key concepts in this lecture in simple terms."><span class="suggestion-icon">${ico("lightbulb")}</span><span class="suggestion-copy"><strong>Explain a concept</strong><small>Simple language, step by step</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
-          <button type="button" data-prompt="Give me a practical example from this lecture."><span class="suggestion-icon">${ico("compass")}</span><span class="suggestion-copy"><strong>Show an example</strong><small>Connect theory to practice</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
-          <button type="button" data-prompt="What are the most important points I should remember from this lecture?"><span class="suggestion-icon">${ico("book-mark")}</span><span class="suggestion-copy"><strong>Revise key points</strong><small>Focus on what matters most</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
-        </div>
-      </div>`;
-    box.scrollTop = box.scrollHeight;
-    box.querySelectorAll("[data-copy-answer]").forEach((button) => {
-      button.onclick = () => copyText(log[Number(button.dataset.copyAnswer)]?.text || "", "Answer copied");
-    });
-    box.querySelectorAll("[data-prompt]").forEach((button) => {
-      button.onclick = () => {
-        input.value = button.dataset.prompt;
-        form.requestSubmit();
-      };
-    });
-  };
-  draw();
-  if (pendingChatPrompt) { input.value = pendingChatPrompt; pendingChatPrompt = null; input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 150)}px`; }
+  const stopButton = el.querySelector("#stopAnswer");
+  const statusEl = el.querySelector("#chatStatus");
 
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
-  });
+  const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const toBottom = () => { box.scrollTop = box.scrollHeight; };
+  const articleFor = (m) => { const i = log.indexOf(m); return i < 0 ? null : box.querySelector(`article[data-i="${i}"]`); };
+
+  const emptyState = () => `
+    <div class="chat-empty-state">
+      <div class="chat-empty-art"><span>${ico("sparkles")}</span><i></i><b></b></div>
+      <div class="chat-empty-eyebrow">START A CONVERSATION</div>
+      <h3>What would you like to understand?</h3>
+      <p>Choose a prompt to get started, or write your own question below.</p>
+      <div class="prompt-suggestions">
+        <button type="button" data-prompt="Explain the key concepts in this lecture in simple terms."><span class="suggestion-icon">${ico("lightbulb")}</span><span class="suggestion-copy"><strong>Explain a concept</strong><small>Simple language, step by step</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+        <button type="button" data-prompt="Give me a practical example from this lecture."><span class="suggestion-icon">${ico("compass")}</span><span class="suggestion-copy"><strong>Show an example</strong><small>Connect theory to practice</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+        <button type="button" data-prompt="What are the most important points I should remember from this lecture?"><span class="suggestion-icon">${ico("book-mark")}</span><span class="suggestion-copy"><strong>Revise key points</strong><small>Focus on what matters most</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+      </div>
+    </div>`;
+
+  // Full render: only on mount and "New chat". Streaming never goes through here.
+  const drawAll = () => {
+    box.innerHTML = log.length ? log.map((m, i) => msgHtml(m, i, log)).join("") : emptyState();
+    toBottom();
+  };
+
+  // The view other code (streamAnswer) talks to. It touches only the parts of the DOM that changed.
+  const view = {
+    box,
+    update(m, parts) {
+      const art = articleFor(m);
+      if (!art) return;
+      const i = log.indexOf(m);
+      const stick = nearBottom();
+      if (parts.text) art.querySelector(".rich-content").innerHTML = messageContentHtml(m);
+      if (parts.sources) {
+        const slot = art.querySelector(".js-sources");
+        const count = String(m.sources?.length || 0);
+        // Only rebuild when the set of sources changed, so an opened <details> stays open while streaming.
+        if (slot.dataset.count !== count) { slot.innerHTML = messageSourcesHtml(m); slot.dataset.count = count; }
+      }
+      if (parts.footer) {
+        art.querySelector(".js-error").innerHTML = messageErrorHtml(m, i, i === log.length - 1);
+        art.querySelector(".js-tools").innerHTML = messageToolsHtml(m, i);
+      }
+      if (stick) toBottom();
+    },
+    replace(m) {
+      const art = articleFor(m);
+      if (!art) return;
+      const i = log.indexOf(m);
+      art.outerHTML = msgHtml(m, i, log);
+    },
+    refreshFooter(index) {
+      const m = log[index];
+      if (m) this.update(m, { footer: true });
+    },
+    setBusy(busy) {
+      sendButton.hidden = busy;
+      stopButton.hidden = !busy;
+      box.setAttribute("aria-busy", busy ? "true" : "false");
+    },
+    // Screen readers hear one short message when an answer finishes, not every streamed token.
+    announce(m) {
+      let text = "";
+      if (m.status === "done") text = "Answer ready. " + plainText(m.text).slice(0, 300);
+      else if (m.status === "error") text = "The answer could not be completed. " + (m.error || "");
+      else if (m.status === "stopped") text = "Answer stopped.";
+      statusEl.textContent = "";
+      setTimeout(() => { statusEl.textContent = text; }, 60);
+    }
+  };
+  chatViews[lectureId] = view;
+
+  drawAll();
+  if (streams[lectureId]) view.setBusy(true); // an answer started before the tab was re-opened is still streaming
+
+  const resize = () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 150)}px`; };
+  if (pendingChatPrompt) { input.value = pendingChatPrompt; pendingChatPrompt = null; resize(); }
+  input.addEventListener("input", resize);
+
   const touchDevice = window.matchMedia("(pointer: coarse)").matches;
   input.addEventListener("keydown", (event) => {
     // Ignore Enter that confirms an IME composition (Japanese, Chinese, Korean, etc.).
@@ -685,70 +906,56 @@ function tabChat(el) {
     }
   });
 
+  // One delegated handler for everything clickable inside the log.
+  box.addEventListener("click", (event) => {
+    const copy = event.target.closest("[data-copy-answer]");
+    if (copy) { copyText(log[Number(copy.dataset.copyAnswer)]?.text || "", "Answer copied"); return; }
+    const retry = event.target.closest("[data-retry]");
+    if (retry) {
+      const i = Number(retry.dataset.retry);
+      const m = log[i];
+      if (!m || m.role !== "ai" || streams[lectureId] || i !== log.length - 1 || !m.question) return;
+      m.text = ""; m.sources = []; m.error = null; m.status = "streaming";
+      view.replace(m);
+      toBottom();
+      saveChat(lectureId);
+      streamAnswer(lectureId, m);
+      return;
+    }
+    const prompt = event.target.closest("[data-prompt]");
+    if (prompt) { input.value = prompt.dataset.prompt; form.requestSubmit(); }
+  });
+
+  stopButton.onclick = () => { streams[lectureId]?.controller.abort(); };
+
   el.querySelector("#reset").onclick = async () => {
+    streams[lectureId]?.controller.abort();
     log.length = 0;
-    draw();
-    try { await post(`/lectures/${current}/chat/reset?session_id=${sid}`); } catch {}
+    saveChat(lectureId);
+    view.setBusy(false);
+    drawAll();
+    try { await post(`/lectures/${lectureId}/chat/reset?session_id=${sid}`); } catch {}
     input.focus();
   };
 
-  form.onsubmit = async (event) => {
+  form.onsubmit = (event) => {
     event.preventDefault();
+    if (streams[lectureId]) return;
     const q = input.value.trim();
-    if (!q || sendButton.disabled) return;
+    if (!q) return;
     input.value = "";
     input.style.height = "auto";
-    const answer = { role: "ai", text: "", sources: [] };
-    log.push({ role: "you", text: q }, answer);
-    sendButton.disabled = true;
-    sendButton.innerHTML = `${ico("sparkles")} Thinking…`;
-    draw();
-    try {
-      const response = await fetch(`${API}/api/lectures/${current}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, session_id: sid })
-      });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || response.statusText);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-        for (const line of lines.filter(Boolean)) {
-          const eventData = JSON.parse(line);
-          if (eventData.type === "sources") answer.sources = eventData.data;
-          else if (eventData.type === "token") answer.text += eventData.data;
-          else if (eventData.type === "error") throw new Error(eventData.data);
-        }
-        draw();
-      }
-      if (buffer.trim()) {
-        try {
-          const eventData = JSON.parse(buffer);
-          if (eventData.type === "sources") answer.sources = eventData.data;
-          else if (eventData.type === "token") answer.text += eventData.data;
-          else if (eventData.type === "error") throw new Error(eventData.data);
-        } catch (error) {
-          if (error instanceof SyntaxError) throw error;
-          throw error;
-        }
-      }
-      draw();
-    } catch (error) {
-      answer.error = error.message || "Something went wrong while generating the answer.";
-      draw();
-    } finally {
-      if (sendButton.isConnected) {
-        sendButton.disabled = false;
-        sendButton.innerHTML = `Send question ${ico("arrow-up-right")}`;
-      }
-      if (input.isConnected) input.focus();
-    }
+    const previousLast = log.length - 1;
+    const userMsg = { role: "you", text: q };
+    const answer = { role: "ai", text: "", sources: [], question: q, status: "streaming" };
+    log.push(userMsg, answer);
+    if (previousLast >= 0) view.refreshFooter(previousLast); // older failed answers lose their Retry button
+    if (previousLast < 0) box.innerHTML = "";               // clear the empty-state prompts
+    box.insertAdjacentHTML("beforeend", msgHtml(userMsg, log.length - 2, log) + msgHtml(answer, log.length - 1, log));
+    toBottom();                                              // your own message always scrolls into view
+    saveChat(lectureId);
+    streamAnswer(lectureId, answer);
+    input.focus();
   };
 }
 
