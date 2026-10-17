@@ -60,6 +60,16 @@ h1{font-size:29px;line-height:1.25;letter-spacing:-.9px;margin:0 0 8px;font-weig
 .workspace-back{font-size:13px;padding:11px 14px;border-radius:12px}
 .workspace-tabs{margin-bottom:22px;gap:5px;padding:5px;border-radius:12px}
 .workspace-tabs button{font-size:13px;font-weight:700;padding:11px 15px;border-radius:9px}
+.reference-upload-card{display:flex;align-items:center;gap:16px;margin:12px 0 18px;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 2px 8px rgba(38,43,87,.025)}
+.reference-upload-copy{flex:1;min-width:0}
+.reference-upload-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;line-height:1.5;color:var(--ink)}
+.reference-upload-heading svg{width:17px;height:17px;flex:0 0 auto;color:var(--primary)}
+.reference-upload-heading span{padding:3px 7px;border-radius:99px;background:var(--surface-2);color:var(--muted);font-size:9px;font-weight:700}
+.reference-upload-copy p{margin:6px 0 5px;color:var(--muted);font-size:11px;line-height:1.65}
+.reference-upload-copy small{display:block;color:var(--muted);font-size:10px;line-height:1.6;overflow-wrap:anywhere}
+.reference-upload-card>.btn{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px}
+.reference-upload-card>.btn svg{width:14px;height:14px}
+.dark .reference-upload-card{background:var(--surface)}
 .workspace-tab-icon svg{width:17px;height:17px}
 .chat-workspace{border-radius:16px;box-shadow:0 2px 8px rgba(38,43,87,.035)}
 .chat-workspace-header{padding:20px 25px;background:var(--surface);gap:15px}
@@ -313,3 +323,8 @@ h1{font-size:29px;line-height:1.25;letter-spacing:-.9px;margin:0 0 8px;font-weig
    user-message layout, squeezing the user's bubble into the avatar column. Higher specificity wins. */
 .chat-message.is-user{grid-template-columns:minmax(0,1fr) 40px}
 @media(max-width:720px){.chat-message.is-user{grid-template-columns:minmax(0,1fr) 30px}}
+@media(max-width:720px){
+  .reference-upload-card{align-items:flex-start;flex-direction:column;gap:12px;padding:14px}
+  .reference-upload-card>.btn{width:100%;justify-content:center}
+  .reference-upload-heading{font-size:11px}
+}

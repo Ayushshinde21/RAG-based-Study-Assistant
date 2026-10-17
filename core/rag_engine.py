@@ -1,4 +1,3 @@
-import os
 import time
 from langchain_core.documents import Document
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -10,28 +9,8 @@ MEMORY_WINDOW = 10
 # ── LLM setup ─────────────────────────────────────────────────────────────────
 
 def get_llm():
-    from langchain_groq import ChatGroq
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY not found in .env")
-
-    try:
-        # "low" skips most of the model's internal reasoning pass — this is
-        # lookup-style Q&A, not a task that needs deep reasoning, and cutting
-        # reasoning effort is the single biggest latency win available here.
-        # Needs a recent langchain-groq; fall back cleanly on older versions.
-        return ChatGroq(
-            model="openai/gpt-oss-20b",
-            api_key=api_key,
-            temperature=0.2,
-            reasoning_effort="low",
-        )
-    except TypeError:
-        return ChatGroq(
-            model="openai/gpt-oss-20b",
-            api_key=api_key,
-            temperature=0.2,
-        )
+    from core.llm import get_gemini_llm
+    return get_gemini_llm()
 
 
 # ── Memory ────────────────────────────────────────────────────────────────────
@@ -165,7 +144,10 @@ class RAGEngine:
         # Step 5 — Generate answer (with retry)
         print("🤖 Generating answer...")
         response = self._invoke_with_retry(prompt)
-        answer = response.content.strip()
+        from core.llm import response_text
+        answer = response_text(response)
+        if not answer:
+            raise RuntimeError("Gemini returned an empty answer. Please try again.")
 
         # Step 6 — Save to memory
         if use_memory:
@@ -205,8 +187,9 @@ class RAGEngine:
         prompt = build_prompt(query, reranked, chat_history)
 
         def token_generator():
+            from core.llm import response_text
             for chunk in self.llm.stream(prompt):
-                text = getattr(chunk, "content", "") or ""
+                text = response_text(chunk)
                 if text:
                     yield text
 

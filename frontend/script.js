@@ -96,7 +96,7 @@ function renderRichText(source, options = {}) {
     const tag = ordered ? "ol" : "ul";
     const items = listItems.map((item) => {
       const depth = Math.min(3, item.depth);
-      const id = options.headingPrefix && depth === 0 ? ` id="${options.headingPrefix}-section-${++sectionNumber}"` : "";
+      const id = options.headingPrefix && options.listItemAnchors !== false && depth === 0 ? ` id="${options.headingPrefix}-section-${++sectionNumber}"` : "";
       return `<li class="rich-list-item depth-${depth}"${id}>${renderInline(item.text)}</li>`;
     }).join("");
     output.push(`<${tag} class="rich-list${ordered ? " is-ordered" : ""}">${items}</${tag}>`);
@@ -453,12 +453,17 @@ function viewDashboard() {
     </section>
     <div id="ytrow" class="youtube-row" hidden><input id="yt" type="url" placeholder="Paste a YouTube lecture URL" aria-label="YouTube lecture URL"><button type="button" class="btn btn-sm" id="ytb">Process link ${ico("arrow-right")}</button></div>
     <div class="upload-options"><span id="hint">Audio files (MP3, M4A) are smaller and work best.</span><button type="button" id="youtube-toggle" class="text-link" hidden>Use a YouTube link ${ico("arrow-up-right")}</button></div>
+    <section id="reference-card" class="reference-upload-card" hidden>
+      <div class="reference-upload-copy"><div class="reference-upload-heading">${ico("book-open")} <strong>Have notes or documents from your lecturer?</strong> <span>Optional, but recommended</span></div><p>Add lecture slides, handouts, or class notes so answers, summaries, and detailed notes can use both the recording and the lecturer's material.</p><small id="reference-files-detail">PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files</small></div>
+      <input type="file" id="reference-files" accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown" multiple hidden>
+      <button type="button" class="btn btn-sm" id="choose-reference-files">${ico("upload")} Add lecturer files</button>
+    </section>
     <section id="prog" class="processing-card" hidden><div class="processing-heading"><span class="processing-spinner"></span><div><strong>Preparing your study workspace</strong><p id="stage">Uploading...</p></div></div><div class="bar"><i id="barfill"></i></div></section>
 
     <section class="metrics-grid" aria-label="Study library statistics">
       <article class="metric-card"><div class="metric-icon purple">${ico("library")}</div><div class="metric-copy"><div class="metric-label">Saved lectures</div><div class="metric-value">${lectures.length}</div><div class="metric-foot">${lectures.length ? "Ready when you are" : "Your library starts here"}</div></div></article>
       <article class="metric-card"><div class="metric-icon mint">${ico("layers")}</div><div class="metric-copy"><div class="metric-label">Knowledge chunks</div><div class="metric-value">${totalChunks.toLocaleString()}</div><div class="metric-foot">Searchable lecture passages</div></div></article>
-      <article class="metric-card"><div class="metric-icon peach">${ico("brain")}</div><div class="metric-copy"><div class="metric-label">Study tools</div><div class="metric-value">4</div><div class="metric-foot">Chat, notes, quiz and evaluation</div></div></article>
+      <article class="metric-card"><div class="metric-icon peach">${ico("brain")}</div><div class="metric-copy"><div class="metric-label">Study tools</div><div class="metric-value">5</div><div class="metric-foot">Chat, summary, detailed notes, quiz and evaluation</div></div></article>
     </section>
 
     <section class="section-block">
@@ -482,41 +487,98 @@ function viewDashboard() {
     </section>`;
 
   const fileInput = $("#file");
+  const referenceInput = $("#reference-files");
   const pickedCard = $("#picked-card");
+  const referenceCard = $("#reference-card");
   const choose = () => fileInput.click();
+  let maxReferenceMB = 15;
+  let maxReferenceFiles = 5;
+  const syncReferenceCard = () => {
+    referenceCard.hidden = !fileInput.files.length && $("#ytrow").hidden;
+  };
+  const selectedReferenceFiles = () => Array.from(referenceInput.files || []);
+  const addReferencesToForm = (form) => selectedReferenceFiles().forEach((item) => form.append("reference_files", item));
   $("#choose-file").onclick = choose;
   $("#empty-upload")?.addEventListener("click", choose);
   fileInput.onchange = (e) => {
     const file = e.target.files[0];
-    if (!file) { pickedCard.hidden = true; return; }
+    if (!file) { pickedCard.hidden = true; syncReferenceCard(); return; }
     $("#fname").textContent = file.name;
     $("#file-detail").textContent = `${(file.size / 1048576).toFixed(1)} MB · Ready to process`;
     pickedCard.hidden = false;
+    syncReferenceCard();
     pickedCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
-  $("#cancel-file").onclick = () => { fileInput.value = ""; pickedCard.hidden = true; };
+  $("#cancel-file").onclick = () => {
+    fileInput.value = "";
+    pickedCard.hidden = true;
+    if ($("#ytrow").hidden) { referenceInput.value = ""; $("#reference-files-detail").textContent = "PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files"; }
+    syncReferenceCard();
+  };
+  $("#choose-reference-files").onclick = () => referenceInput.click();
+  referenceInput.onchange = () => {
+    const files = selectedReferenceFiles();
+    if (files.length > maxReferenceFiles) {
+      referenceInput.value = "";
+      $("#reference-files-detail").textContent = `Choose at most ${maxReferenceFiles} files.`;
+      return toast(`Add no more than ${maxReferenceFiles} lecturer files.`);
+    }
+    const tooLarge = files.find((item) => item.size > maxReferenceMB * 1048576);
+    if (tooLarge) {
+      referenceInput.value = "";
+      $("#reference-files-detail").textContent = `Each lecturer file must be ${maxReferenceMB} MB or smaller.`;
+      return toast(`"${tooLarge.name}" is larger than ${maxReferenceMB} MB.`);
+    }
+    const totalSize = files.reduce((total, item) => total + item.size, 0);
+    const sourceSize = $("#ytrow").hidden ? (fileInput.files[0]?.size || 0) : 0;
+    if (sourceSize + totalSize > maxMB * 1048576) {
+      referenceInput.value = "";
+      $("#reference-files-detail").textContent = `The combined upload must be ${maxMB} MB or smaller.`;
+      return toast(`The lecture and lecturer files together must stay under ${maxMB} MB.`);
+    }
+    $("#reference-files-detail").textContent = files.length
+      ? `${files.length} file${files.length === 1 ? "" : "s"} selected · ${(totalSize / 1048576).toFixed(1)} MB · ${files.map((item) => item.name).join(", ")}`
+      : "PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files";
+  };
 
   let maxMB = 200;
   api("/health").then((h) => {
     maxMB = h.max_upload_mb || maxMB;
+    maxReferenceMB = h.max_reference_file_mb || maxReferenceMB;
+    maxReferenceFiles = h.max_reference_files || maxReferenceFiles;
     const yt = h.youtube_enabled !== false;
     $("#youtube-toggle").hidden = !yt;
-    $("#hint").textContent = `Files up to ${maxMB} MB. Audio files (MP3, M4A) are smaller and work best.` +
+    $("#reference-files-detail").textContent = `PDF, DOCX, PPTX, TXT or Markdown · Up to ${maxReferenceFiles} files, ${maxReferenceMB} MB each`;
+    $("#hint").textContent = `Combined upload up to ${maxMB} MB. Audio files (MP3, M4A) are smaller and work best.` +
       (yt ? " You can also add a YouTube lecture link." : " YouTube links are disabled on this server; upload the audio or video file instead.");
   }).catch(() => {});
-  $("#youtube-toggle").onclick = () => { $("#ytrow").hidden = !$("#ytrow").hidden; if (!$("#ytrow").hidden) $("#yt").focus(); };
+  $("#youtube-toggle").onclick = () => {
+    $("#ytrow").hidden = !$("#ytrow").hidden;
+    syncReferenceCard();
+    if (!$("#ytrow").hidden) $("#yt").focus();
+  };
   $("#up").onclick = () => {
     const f = fileInput.files[0];
     if (!f) return toast("Choose a file first");
     if (f.size > maxMB * 1048576) return toast(`That file is over ${maxMB} MB. Extract the audio (MP3) and upload that instead.`);
     const fd = new FormData();
     fd.append("file", f);
+    const references = selectedReferenceFiles();
+    if (references.some((item) => item.size > maxReferenceMB * 1048576)) return toast(`Each lecturer file must be ${maxReferenceMB} MB or smaller.`);
+    if (f.size + references.reduce((total, item) => total + item.size, 0) > maxMB * 1048576) return toast(`The lecture and lecturer files together must stay under ${maxMB} MB.`);
+    addReferencesToForm(fd);
     track(fetch(API + "/api/lectures/upload", { method: "POST", body: fd }));
   };
   $("#ytb").onclick = () => {
     const url = $("#yt").value.trim();
     if (!url) return toast("Paste a YouTube link first");
-    track(fetch(API + "/api/lectures/youtube", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) }));
+    const references = selectedReferenceFiles();
+    if (references.some((item) => item.size > maxReferenceMB * 1048576)) return toast(`Each lecturer file must be ${maxReferenceMB} MB or smaller.`);
+    if (references.reduce((total, item) => total + item.size, 0) > maxMB * 1048576) return toast(`Lecturer files together must stay under ${maxMB} MB.`);
+    const fd = new FormData();
+    fd.append("url", url);
+    addReferencesToForm(fd);
+    track(fetch(API + "/api/lectures/youtube", { method: "POST", body: fd }));
   };
   document.querySelectorAll("[data-tool-tab]").forEach((button) => {
     button.onclick = () => {
@@ -536,7 +598,7 @@ async function track(request) {
   $("#stage").className = "";
   $("#stage").textContent = "Uploading...";
   $("#barfill").style.width = "3%";
-  const btns = document.querySelectorAll("#picked-card .btn, #ytb, #choose-file");
+  const btns = document.querySelectorAll("#picked-card .btn, #ytb, #choose-file, #choose-reference-files");
   btns.forEach((b) => (b.disabled = true));
   let finished = false;
   try {
@@ -561,7 +623,13 @@ async function track(request) {
         $("#stage").textContent = j.status === "queued" ? "Waiting for the server to start..." : `${j.stage} · step ${j.step} of ${j.total}`;
         $("#barfill").style.width = (j.step / j.total) * 100 + "%";
         if (j.status === "error") throw new Error(j.error);
-        if (j.status === "done") { finished = true; toast("Workspace ready"); location.hash = "#/workspace/" + j.lecture_id; return; }
+        if (j.status === "done") {
+          finished = true;
+          const warnings = Array.isArray(j.warnings) ? j.warnings : [];
+          toast(warnings.length ? `Workspace ready. ${warnings.length} lecturer-file warning${warnings.length === 1 ? "" : "s"}: ${String(warnings[0]).slice(0, 110)}` : "Workspace ready");
+          location.hash = "#/workspace/" + j.lecture_id;
+          return;
+        }
       }
     }
     if (!finished) throw new Error("The connection closed before processing finished. Check My Lectures in a minute, or try again.");
@@ -607,8 +675,8 @@ function viewWorkspace() {
     $("#view").innerHTML = `<div class="workspace-empty"><div class="workspace-empty-icon">${ico("brain")}</div><div class="eyebrow">YOUR LEARNING SPACE</div><h1>Study workspace</h1><p>Open a lecture from your library to chat with your materials, create focused notes, or practise what you've learned.</p><a class="btn" href="#/lectures">Browse my lectures ${ico("arrow-right")}</a></div>`;
     return;
   }
-  const tabs = { Chat: tabChat, Summary: tabSummary, Quiz: tabQuiz, Evaluation: tabEval };
-  const tabIcons = { Chat: "message-circle", Summary: "file-text", Quiz: "clipboard-check", Evaluation: "file-check" };
+  const tabs = { Chat: tabChat, Summary: tabSummary, "Detailed Notes": tabDetailedNotes, Quiz: tabQuiz, Evaluation: tabEval };
+  const tabIcons = { Chat: "message-circle", Summary: "file-text", "Detailed Notes": "book-open", Quiz: "clipboard-check", Evaluation: "file-check" };
   $("#view").innerHTML = `
     <div class="workspace-page-head">
       <div class="workspace-title-group">
@@ -1028,6 +1096,81 @@ function tabSummary(el, alive = () => true) {
       if (stale()) return;
       el.innerHTML = `<section class="summary-error-card"><div class="summary-error-icon">${ico("circle-help")}</div><div><h3>We couldn't prepare your summary</h3><p>${esc(error.message)}</p><button type="button" class="btn" id="re">Try again</button></div></section>`;
       el.querySelector("#re").onclick = () => load(false);
+    }
+  };
+  load(false);
+}
+
+function tabDetailedNotes(el, alive = () => true) {
+  const lectureId = current;
+  const lec = lectures.find((l) => l.id === lectureId);
+  let loadSeq = 0;
+  const load = async (refresh) => {
+    const mine = ++loadSeq;
+    const stale = () => mine !== loadSeq || !alive();
+    el.innerHTML = `
+      <section class="summary-loading-card">
+        <div class="summary-loading-icon"><span class="processing-spinner"></span></div>
+        <div><strong>${refresh ? "Refreshing detailed notes" : "Building detailed lecture notes"}</strong><p>Connecting the lecture's concepts into a fuller, step-by-step study guide…</p></div>
+        <div class="summary-skeleton"><i></i><i></i><i></i><i></i></div>
+      </section>`;
+    try {
+      const { detailed_notes: result } = await api(`/lectures/${lectureId}/detailed-notes${refresh ? "?refresh=true" : ""}`);
+      if (stale()) return;
+      const text = String(result || "").trim();
+      const words = text ? text.match(/\S+/g).length : 0;
+      const readingMinutes = Math.max(1, Math.ceil(words / 220));
+      const sections = extractSummarySections(text);
+      const outline = sections.length
+        ? sections.map((name, index) => `<a href="#detailed-section-${index + 1}" data-detailed-target="detailed-section-${index + 1}"><span>${String(index + 1).padStart(2, "0")}</span><b>${esc(name)}</b></a>`).join("")
+        : `<a href="#detailed-notes-document" data-detailed-target="detailed-notes-document"><span>01</span><b>Detailed notes</b></a>`;
+      el.innerHTML = `
+        <section class="summary-page detailed-notes-page">
+          <header class="summary-hero-card">
+            <div class="summary-title-row">
+              <div class="summary-title-icon">${ico("book-open")}</div>
+              <div class="summary-title-copy"><div class="summary-kicker"><span></span> IN-DEPTH STUDY GUIDE</div><h2>Detailed lecture notes</h2><p>Step-by-step explanations, definitions, examples, and revision checkpoints drawn from your lecture material.</p></div>
+            </div>
+            <div class="summary-actions"><button type="button" class="summary-action-button" id="copy-detailed-notes">${ico("clipboard-check")}<span>Copy notes</span></button><button type="button" class="summary-action-button" id="download-detailed-notes">${ico("download")}<span>Download .md</span></button><button type="button" class="btn" id="refresh-detailed-notes">${ico("sparkles")} Refresh</button></div>
+            <div class="summary-meta-row"><span>${ico("clock")} About ${readingMinutes} min read</span><i></i><span>${ico("layers")} ${words.toLocaleString()} words</span><i></i><span>${ico("book-open")} Lecture-grounded guide</span></div>
+          </header>
+          <div class="summary-reading-layout">
+            <aside class="summary-outline-card"><div class="summary-outline-heading">IN THESE NOTES</div><nav class="summary-outline">${outline}</nav><div class="summary-outline-tip"><span>${ico("lightbulb")}</span><div><strong>Study tip</strong><p>Pause after each section and explain the concept without looking at the notes.</p></div></div></aside>
+            <article id="detailed-notes-document" class="summary-document">${renderRichText(text, { headingPrefix: "detailed", listItemAnchors: false })}</article>
+          </div>
+          <footer class="summary-bottom-card"><div class="summary-bottom-icon">${ico("message-circle")}</div><div class="summary-bottom-copy"><strong>Need help with a difficult section?</strong><p>Ask the study assistant to explain it step by step or create a worked example based on this lecture.</p></div><button type="button" class="ghost" id="discuss-detailed-notes">Discuss with AI ${ico("arrow-up-right")}</button></footer>
+        </section>`;
+      el.querySelectorAll("[data-detailed-target]").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          const target = el.querySelector(`[id="${link.dataset.detailedTarget}"]`);
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+      el.querySelector("#copy-detailed-notes").onclick = () => copyText(text, "Detailed notes copied");
+      el.querySelector("#download-detailed-notes").onclick = () => {
+        const safeTitle = String(lec?.title || "lecture").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "lecture";
+        const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${safeTitle}-detailed-notes.md`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast("Detailed-notes download started");
+      };
+      el.querySelector("#refresh-detailed-notes").onclick = () => load(true);
+      el.querySelector("#discuss-detailed-notes").onclick = () => {
+        pendingChatPrompt = "Walk me through the detailed lecture notes step by step. Start with the hardest or most important concepts, use only the lecture material, and give examples where supported.";
+        const chatTab = document.querySelector('.workspace-tabs [data-tab="Chat"]');
+        if (chatTab) chatTab.click();
+      };
+    } catch (error) {
+      if (stale()) return;
+      el.innerHTML = `<section class="summary-error-card"><div class="summary-error-icon">${ico("circle-help")}</div><div><h3>We couldn't prepare detailed notes</h3><p>${esc(error.message)}</p><button type="button" class="btn" id="retry-detailed-notes">Try again</button></div></section>`;
+      el.querySelector("#retry-detailed-notes").onclick = () => load(false);
     }
   };
   load(false);

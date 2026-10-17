@@ -22,15 +22,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 ALLOWED_EXTENSIONS = {"mp4", "mkv", "avi", "mov", "webm", "mp3", "wav", "m4a", "ogg", "flac"}
+REFERENCE_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
 # Cloud Run rejects HTTP/1 request bodies over 32 MiB, so the hosted default is 30.
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
+MAX_REFERENCE_FILE_MB = int(os.getenv("MAX_REFERENCE_FILE_MB", "15"))
+MAX_REFERENCE_FILES = 5
+MAX_REFERENCE_TEXT_CHARS = 250_000
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
 TITLES_PATH = "lecture_titles.json"
 # YouTube blocks downloads from cloud servers (HTTP 403), so the hosted build sets this to 0.
@@ -60,6 +64,7 @@ JOBS: dict[str, dict] = {}                 # job_id -> progress of a processing 
 RUNTIME: dict[str, dict] = {}              # lecture_id -> {docs, dense, bm25} (shared retrievers)
 ENGINES: dict[tuple, object] = {}          # (lecture_id, session_id) -> RAGEngine (own chat memory)
 SUMMARIES: dict[str, str] = {}
+DETAILED_NOTES: dict[str, str] = {}
 PROCESS_LOCK = threading.Semaphore(1)      # one heavy pipeline at a time (protects RAM)
 LOAD_LOCK = threading.Lock()
 TITLE_LOCK = threading.Lock()
@@ -173,8 +178,10 @@ def set_step(job: dict, i: int):
     job["step"], job["stage"] = i + 1, STEPS[i]
 
 
-def run_job(job_id: str, source: str, is_url: bool):
+def run_job(job_id: str, source: str, is_url: bool, reference_files: list[dict] | None = None):
     job = JOBS[job_id]
+    reference_files = reference_files or []
+    job.setdefault("warnings", [])
     audio_path = None
     vector_store = None
     lecture_id = None
@@ -210,6 +217,36 @@ def run_job(job_id: str, source: str, is_url: bool):
             docs = chunk_from_file(transcript_path, method="semantic")
             if not docs:
                 raise RuntimeError("No text chunks could be created from the transcript.")
+            for doc in docs:
+                doc.metadata["source_type"] = "lecture_transcript"
+
+            # Lecturer-provided material is optional. A malformed attachment should
+            # not prevent a valid lecture recording from being processed.
+            if reference_files:
+                from core.chunker import chunk_text
+                for index, item in enumerate(reference_files, start=1):
+                    try:
+                        job["stage"] = f"Reading lecturer material {index} of {len(reference_files)}"
+                        text = extract_reference_text(item["path"], item["filename"])
+                        if not text.strip():
+                            raise ValueError("No readable text was found in this file.")
+                        if len(text) > MAX_REFERENCE_TEXT_CHARS:
+                            text = text[:MAX_REFERENCE_TEXT_CHARS]
+                            job["warnings"].append(
+                                f"{item['filename']}: only the first {MAX_REFERENCE_TEXT_CHARS:,} characters were indexed."
+                            )
+                        material_docs = chunk_text(text, source=item["filename"], method="fixed")
+                        for chunk_index, doc in enumerate(material_docs):
+                            doc.metadata.update({
+                                "source_type": "lecturer_material",
+                                "filename": item["filename"],
+                                "document_chunk": chunk_index,
+                            })
+                        docs.extend(material_docs)
+                    except Exception as e:
+                        warning = f"Could not read {item['filename']}: {friendly_error(e)}"
+                        job["warnings"].append(warning)
+                        print(f"[job {job_id}] {warning}")
 
             set_step(job, 3)
             from core.vector_store import (build_vector_store, get_dense_retriever,
@@ -238,7 +275,9 @@ def run_job(job_id: str, source: str, is_url: bool):
                 pass
         job.update(status="error", error=f"Processing failed during {job.get('stage', 'startup')}. {friendly_error(e)}")
     finally:
-        for p in {source if not is_url else None, audio_path}:
+        paths_to_remove = {source if not is_url else None, audio_path}
+        paths_to_remove.update(item.get("path") for item in reference_files)
+        for p in paths_to_remove:
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
@@ -249,13 +288,13 @@ def run_job(job_id: str, source: str, is_url: bool):
 def new_job() -> str:
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {"status": "queued", "stage": "Waiting to start", "step": 0,
-                    "total": len(STEPS), "lecture_id": None, "error": None}
+                    "total": len(STEPS), "lecture_id": None, "error": None, "warnings": []}
     return job_id
 
 
-def start_job(source: str, is_url: bool):
+def start_job(source: str, is_url: bool, reference_files: list[dict] | None = None):
     job_id = new_job()
-    thread = threading.Thread(target=run_job, args=(job_id, source, is_url), daemon=True)
+    thread = threading.Thread(target=run_job, args=(job_id, source, is_url, reference_files), daemon=True)
     thread.start()
     return job_id, thread
 
@@ -270,7 +309,7 @@ def job_events(job_id: str, thread: threading.Thread):
     while True:
         job = dict(JOBS[job_id])
         alive = thread.is_alive()
-        snap = {k: job.get(k) for k in ("status", "stage", "step", "total", "lecture_id", "error")}
+        snap = {k: job.get(k) for k in ("status", "stage", "step", "total", "lecture_id", "error", "warnings")}
         if snap != last:
             yield json.dumps(snap) + "\n"
             last, last_beat = snap, time.time()
@@ -288,11 +327,115 @@ def job_events(job_id: str, thread: threading.Thread):
 # ── Routes: health + processing ──────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "max_upload_mb": MAX_UPLOAD_MB, "youtube_enabled": YOUTUBE_ENABLED}
+    return {
+        "status": "ok",
+        "max_upload_mb": MAX_UPLOAD_MB,
+        "youtube_enabled": YOUTUBE_ENABLED,
+        "max_reference_file_mb": MAX_REFERENCE_FILE_MB,
+        "max_reference_files": MAX_REFERENCE_FILES,
+        "reference_extensions": sorted(REFERENCE_EXTENSIONS),
+    }
+
+
+def _save_reference_uploads(uploads: list[UploadFile], remaining_bytes: int | None = None) -> list[dict]:
+    named_uploads = [item for item in uploads if item and (item.filename or "").strip()]
+    if len(named_uploads) > MAX_REFERENCE_FILES:
+        raise HTTPException(400, f"Upload at most {MAX_REFERENCE_FILES} lecturer files.")
+
+    paths: list[dict] = []
+    max_file_bytes = MAX_REFERENCE_FILE_MB * 1024 * 1024
+    budget = MAX_UPLOAD_MB * 1024 * 1024 if remaining_bytes is None else remaining_bytes
+    total_bytes = 0
+    try:
+        for upload_file in named_uploads:
+            original_name = os.path.basename(upload_file.filename or "lecturer-material")
+            ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+            if ext not in REFERENCE_EXTENSIONS:
+                accepted = ", ".join(sorted(REFERENCE_EXTENSIONS))
+                raise HTTPException(400, f"Unsupported lecturer document '{original_name}'. Use: {accepted}.")
+
+            path = None
+            size = 0
+            with tempfile.NamedTemporaryFile(delete=False, suffix="." + ext, prefix="lecturer_material_") as tmp:
+                path = tmp.name
+                while True:
+                    chunk = upload_file.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    total_bytes += len(chunk)
+                    if size > max_file_bytes:
+                        raise HTTPException(413, f"'{original_name}' is larger than {MAX_REFERENCE_FILE_MB} MB.")
+                    if total_bytes > budget:
+                        raise HTTPException(413, f"The combined upload exceeds {MAX_UPLOAD_MB} MB. Reduce the video or lecturer documents.")
+                    tmp.write(chunk)
+
+            if size == 0:
+                os.remove(path)
+                raise HTTPException(400, f"'{original_name}' is empty.")
+            paths.append({"path": path, "filename": original_name})
+        return paths
+    except Exception:
+        for item in paths:
+            try:
+                os.remove(item["path"])
+            except OSError:
+                pass
+        if 'path' in locals() and path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+
+def extract_reference_text(path: str, filename: str) -> str:
+    """Extract text from supported lecturer documents without changing the source file."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "pdf":
+        from utils.pdf_reader import read_pdf_text
+        text = read_pdf_text(path, with_page_markers=True)
+    elif ext in {"txt", "md"}:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
+            text = file.read()
+    elif ext == "docx":
+        from docx import Document as WordDocument
+        document = WordDocument(path)
+        pieces = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                values = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                if any(values):
+                    pieces.append(" | ".join(values))
+        text = "\n\n".join(pieces)
+    elif ext == "pptx":
+        from pptx import Presentation
+        presentation = Presentation(path)
+        slides = []
+        for slide_number, slide in enumerate(presentation.slides, start=1):
+            pieces = []
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.text.strip():
+                    pieces.append(shape.text.strip())
+                if getattr(shape, "has_table", False):
+                    for row in shape.table.rows:
+                        values = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                        if any(values):
+                            pieces.append(" | ".join(values))
+            if pieces:
+                slides.append(f"[Slide {slide_number}]\n" + "\n".join(pieces))
+        text = "\n\n".join(slides)
+    else:
+        raise ValueError("Unsupported lecturer document format.")
+
+    text = text.strip()
+    if not text:
+        raise ValueError("No text could be extracted. Scanned PDFs may need OCR before upload.")
+    return text
 
 
 @app.post("/api/lectures/upload")
-def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...), reference_files: list[UploadFile] = File(default=[])):
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, "Unsupported file type. Use: " + ", ".join(sorted(ALLOWED_EXTENSIONS)))
@@ -309,7 +452,15 @@ def upload(file: UploadFile = File(...)):
     if size == 0:
         os.remove(path)
         raise HTTPException(400, "This file is empty.")
-    job_id, thread = start_job(path, False)
+    try:
+        notes = _save_reference_uploads(reference_files, remaining_bytes=limit - size)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    job_id, thread = start_job(path, False, notes)
     return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
 
 
@@ -318,12 +469,28 @@ class YouTubeRequest(BaseModel):
 
 
 @app.post("/api/lectures/youtube")
-def from_youtube(req: YouTubeRequest):
+async def from_youtube(request: Request):
+    # Keep support for existing JSON clients while accepting multipart form data
+    # from the frontend when lecturer documents are attached.
+    content_type = request.headers.get("content-type", "").lower()
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        url = str(form.get("url", "")).strip()
+        reference_uploads = form.getlist("reference_files")
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(400, "Provide a YouTube URL.")
+        url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
+        reference_uploads = []
+
     if not YOUTUBE_ENABLED:
         raise HTTPException(400, "YouTube links are turned off on this server. Upload the audio file instead.")
-    if not valid_youtube_url(req.url):
+    if not valid_youtube_url(url):
         raise HTTPException(400, "Please provide a link to a single YouTube video.")
-    job_id, thread = start_job(req.url.strip(), True)
+    notes = _save_reference_uploads(reference_uploads)
+    job_id, thread = start_job(url, True, notes)
     return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
 
 
@@ -370,6 +537,7 @@ def remove(lecture_id: str):
             save_titles(titles)
     RUNTIME.pop(lecture_id, None)
     SUMMARIES.pop(lecture_id, None)
+    DETAILED_NOTES.pop(lecture_id, None)
     for key in [k for k in ENGINES if k[0] == lecture_id]:
         ENGINES.pop(key, None)
     return {"deleted": lecture_id}
@@ -425,6 +593,18 @@ def summary(lecture_id: str, refresh: bool = False):
         except Exception as e:
             raise HTTPException(500, friendly_error(e))
     return {"summary": SUMMARIES[lecture_id]}
+
+
+@app.get("/api/lectures/{lecture_id}/detailed-notes")
+def detailed_notes(lecture_id: str, refresh: bool = False):
+    if refresh or lecture_id not in DETAILED_NOTES:
+        from features.detailed_notes import generate_detailed_notes
+        docs = get_runtime(lecture_id)["docs"]
+        try:
+            DETAILED_NOTES[lecture_id] = generate_detailed_notes(docs)
+        except Exception as e:
+            raise HTTPException(500, friendly_error(e))
+    return {"detailed_notes": DETAILED_NOTES[lecture_id]}
 
 
 class QuizRequest(BaseModel):

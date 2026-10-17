@@ -37,3 +37,5 @@ requests
 tqdm
 numpy
 pypdf
+python-docx
+python-pptx

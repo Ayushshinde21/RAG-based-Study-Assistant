@@ -86,3 +86,6 @@ while True:
         continue
     answer = rag.answer(query)
     print(f"\n🤖 Answer:\n{answer}")
+
+
+#uvicorn api:app --reload --port 8000

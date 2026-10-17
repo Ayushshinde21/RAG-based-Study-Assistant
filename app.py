@@ -375,6 +375,53 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------------------
+# Readability pass for the legacy Streamlit workspace
+# -----------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .st-key-ws_chat, .st-key-ws_notes { max-width: 68rem; }
+    .st-key-chat_card { border-radius: 18px; box-shadow: 0 2px 8px var(--shadow); }
+    .st-key-chat_card [data-testid="stVerticalBlock"] { gap: .8rem; }
+    .bot-bubble { font-size: 15px; line-height: 1.8; padding: 17px 19px; }
+    [data-testid="stChatMessage"] { padding: 16px 18px; border-radius: 15px; margin-bottom: 12px; }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] { font-size: 15px; line-height: 1.8; }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p { font-size: 15px; line-height: 1.8; margin-bottom: .65rem; }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li { font-size: 15px; line-height: 1.75; margin: .25rem 0; }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h1,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h2,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] h3 { font-size: 1.08rem; line-height: 1.45; margin: 1rem 0 .5rem; }
+    .st-key-chat_pills { border-top: 1px solid var(--line); background: var(--paper-2); padding: 13px 17px; }
+    .st-key-chat_pills [data-testid="stHorizontalBlock"] { align-items: center; gap: .55rem; flex-wrap: wrap; }
+    .st-key-chat_pills .stButton > button { min-height: 38px; padding: 6px 13px; font-size: 12px; border-radius: 999px; }
+    .st-key-chat_pills .suggest-label { font-size: 12px; }
+    [data-testid="stChatInput"] { border-radius: 14px; padding: 5px 7px; }
+    [data-testid="stChatInput"] textarea { font-size: 15px !important; line-height: 1.6 !important; }
+    .st-key-summary_card { padding: clamp(22px, 3vw, 42px); border-radius: 16px; font-size: 15px; line-height: 1.85; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] { max-width: 78ch; margin: 0 auto; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] p { font-size: 15px; line-height: 1.85; margin: 0 0 1rem; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] h1 { font-size: 1.75rem; line-height: 1.3; margin: .25rem 0 1.1rem; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] h2 { font-size: 1.35rem; line-height: 1.4; margin: 2rem 0 .8rem; padding-bottom: .55rem; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] h3 { font-size: 1.12rem; line-height: 1.45; margin: 1.45rem 0 .6rem; padding-bottom: 0; border-bottom: 0; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] ul,
+    .st-key-summary_card [data-testid="stMarkdownContainer"] ol { padding-left: 1.5rem; margin: .6rem 0 1.1rem; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] li { font-size: 15px; line-height: 1.8; margin: .35rem 0; padding-left: .2rem; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] pre { padding: 16px; border-radius: 12px; line-height: 1.7; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] code { font-size: .88em; }
+    .st-key-summary_card [data-testid="stMarkdownContainer"] blockquote { margin: 1rem 0; padding: 12px 17px; border-left: 3px solid var(--primary); background: var(--paper-2); border-radius: 0 10px 10px 0; }
+    @media (max-width: 900px) {
+        .st-key-chat_card [data-testid="stChatMessage"] { padding: 13px; }
+        .st-key-summary_card { padding: 20px 17px; }
+        .st-key-summary_card [data-testid="stMarkdownContainer"] p,
+        .st-key-summary_card [data-testid="stMarkdownContainer"] li { font-size: 14px; }
+        .st-key-chat_pills { padding: 10px; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -----------------------------------------------------------------------------
 # State
 # -----------------------------------------------------------------------------
 WORKSPACE_TABS = ["💬 Ask AI", "📝 Revision notes", "🎯 Practice quiz", "⚙ AI quality"]

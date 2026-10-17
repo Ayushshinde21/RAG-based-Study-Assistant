@@ -5,3 +5,6 @@ chroma_db/
 transcripts/
 audio_files/
 cookies.txt
+.env.example
+.gcloudignore
+.gitignore

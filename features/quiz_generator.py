@@ -1,15 +1,11 @@
-import os
 import json
-from langchain_groq import ChatGroq
+
+from core.llm import get_gemini_llm, response_text
 from langchain_core.documents import Document
 
 
-def get_llm():
-    return ChatGroq(
-        model="openai/gpt-oss-20b",  # replace with your working model
-        api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.5,   # slightly higher for variety
-    )
+def get_llm(*, response_mime_type: str | None = None):
+    return get_gemini_llm(response_mime_type=response_mime_type)
 
 
 def generate_quiz(docs: list[Document], num_questions: int = 5, max_chunks: int = 15) -> list[dict]:
@@ -49,9 +45,12 @@ Format:
 
 --- JSON OUTPUT ---"""
 
-    llm = get_llm()
+    llm = get_llm(response_mime_type="application/json")
     response = llm.invoke(prompt)
-    raw = response.content.strip()
+    raw = response_text(response)
+    if not raw:
+        print("⚠️ Gemini returned an empty quiz response")
+        return []
     raw = raw.replace("```json", "").replace("```", "").strip()
 
     try:
