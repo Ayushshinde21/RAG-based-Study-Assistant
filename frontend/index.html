@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f7fb">
+  <meta name="theme-color" content="#f4f6f6">
+  <meta name="description" content="Organize lecture recordings, prepare study notes, ask questions about course material, and practise with quizzes.">
   <script>try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
-  <title>Campus Study Desk — Student Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <title>Campus Study Desk | Student Dashboard</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
   <script>window.API_BASE = "";</script>
 </head>
@@ -27,12 +26,12 @@
       </nav>
       <div class="sidebar-promo">
         <div class="promo-orbit"><span data-icon="sparkles"></span></div>
-        <strong>Make every study hour count.</strong>
-        <p>Turn your lectures into notes, answers and practice.</p>
-        <a href="#/dashboard" class="promo-link">Start studying <span data-icon="arrow-up-right"></span></a>
+        <strong>Lecture tools in one place.</strong>
+        <p>Create notes, ask questions, and practise from your course material.</p>
+        <a href="#/lectures" class="promo-link">Open lecture library <span data-icon="arrow-up-right"></span></a>
       </div>
       <div class="side-bottom">
-        <div class="side-note"><span class="online-dot"></span><span>Built for curious minds</span></div>
+        <div class="side-note"><span class="online-dot"></span><span>Designed for lecture-based study</span></div>
         <button id="theme" class="theme-toggle" type="button"><span data-icon="moon"></span><span class="theme-label">Dark appearance</span><span class="toggle-track"><i></i></span></button>
       </div>
     </aside>
@@ -48,7 +47,7 @@
         </div>
       </header>
       <main id="view" tabindex="-1"></main>
-      <footer class="page-footer"><span>© <span id="year"></span> Campus Study Desk</span><span>Learn at your own pace <span class="footer-heart">✦</span></span></footer>
+      <footer class="page-footer"><span>© <span id="year"></span> Campus Study Desk</span><nav class="footer-links" aria-label="Legal information"><a href="#/privacy">Privacy policy</a><a href="#/terms">Terms and conditions</a></nav></footer>
     </div>
 
     <aside class="info" id="info" aria-label="Study overview"></aside>

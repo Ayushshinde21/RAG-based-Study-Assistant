@@ -324,10 +324,16 @@ async function route() {
   const seq = ++routeSeq; // a newer navigation invalidates this one
   const [, page = "dashboard", id] = location.hash.split("/");
   document.querySelector(".app")?.classList.toggle("workspace-mode", page === "workspace");
-  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace" };
+  const isLegalPage = page === "privacy" || page === "terms";
+  document.querySelector(".app")?.classList.toggle("legal-mode", isLegalPage);
+  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace", privacy: "Privacy policy", terms: "Terms and conditions" };
   $("#top-page").textContent = labels[page] || "Overview";
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === page));
   if (id) { current = id; store.set("lecture", id); }
+  if (isLegalPage) {
+    viewLegalPage(page);
+    return;
+  }
   let loadError = null;
   try {
     const data = await api("/lectures");
@@ -353,6 +359,43 @@ async function route() {
   $("#nav-count").textContent = lectures.length;
 }
 window.addEventListener("hashchange", route);
+
+
+function viewLegalPage(page) {
+  const isPrivacy = page === "privacy";
+  const title = isPrivacy ? "Privacy policy" : "Terms and conditions";
+  const intro = isPrivacy
+    ? "This policy explains how Campus Study Desk handles information when you upload lecture material or use its study tools. The deployed operator must confirm the details below before making the service public."
+    : "These terms cover your use of Campus Study Desk, including lecture uploads, generated notes, question answering, quizzes, and evaluation tools. The deployed operator must confirm the details below before making the service public.";
+  const privacySections = `
+    <section><h2>1. Information the service processes</h2><p>The application can process audio and video recordings, documents, lecture titles, extracted transcripts, text passages created for search, questions you submit, and generated study materials. Operational logs may also contain request details needed to run and troubleshoot the service.</p></section>
+    <section><h2>2. How information is used</h2><p>Material is used to transcribe recordings, build searchable lecture indexes, answer questions, prepare summaries and detailed notes, generate quizzes, and evaluate answers. It may also be used to maintain service security and diagnose failures.</p></section>
+    <section><h2>3. External service providers</h2><p>Depending on the enabled features and deployment configuration, the application can send recording content to Sarvam AI for transcription or translation, and send text prompts or evaluation content to Google Gemini or Groq for model-powered features. Review the current terms and privacy notices of each provider used in your deployment. Confirm the active providers before launch and update this section if the configuration changes.</p></section>
+    <section><h2>4. Storage and retention</h2><p>Lecture files, transcripts, indexes, and generated material may be stored in the application's configured server storage. This code package does not define a complete automatic retention or deletion schedule. The operator must state how long each data type is kept, how a user can request deletion, and how backups are handled before public release.</p></section>
+    <section><h2>5. Browser storage</h2><p>The frontend uses browser local storage for interface preferences and limited navigation state, such as the chosen colour theme and recently selected lecture. The supplied frontend does not include an advertising tracker. Hosting, reverse proxies, or third-party services may apply their own logging or storage, which must be documented for the deployed service.</p></section>
+    <section><h2>6. Your choices</h2><p>Do not upload material unless you have the right to use it for this purpose. Avoid including passwords, payment details, or unrelated sensitive personal information. To request access to or deletion of information, contact the operator using the contact details published on the deployed service.</p></section>
+    <section><h2>7. Security</h2><p>The operator should restrict access to uploaded material, protect API credentials, configure transport security, maintain dependencies, and define a response process for incidents. No website or storage system can be guaranteed completely secure.</p></section>
+    <section><h2>8. Changes to this policy</h2><p>This policy should be updated when data practices, service providers, hosting, or retention rules change. The operator must publish a working contact address and the date of the latest substantive revision.</p></section>`;
+  const termsSections = `
+    <section><h2>1. Purpose of the service</h2><p>Campus Study Desk provides tools for working with course material, including transcription, searchable lecture passages, summaries, detailed notes, question answering, quizzes, and answer evaluation.</p></section>
+    <section><h2>2. Your material and permissions</h2><p>You remain responsible for the content you upload and for having the rights or permissions needed to process it. Do not upload material unlawfully, infringe another person's rights, or submit content you are not authorized to share with the service's configured providers.</p></section>
+    <section><h2>3. Generated content and accuracy</h2><p>Transcripts, answers, summaries, quizzes, and evaluation results may contain omissions or errors. Check important claims against the original lecture and linked source passages. The service is a study aid, not a substitute for your course instructions, an instructor's judgment, or professional advice.</p></section>
+    <section><h2>4. Acceptable use</h2><p>Do not attempt to disrupt the service, bypass access controls, upload malicious files, misuse other people's material, or use the service to violate applicable law. The operator may limit access to protect the service or respond to misuse, subject to applicable law.</p></section>
+    <section><h2>5. Third-party services</h2><p>Some functions depend on external transcription or model providers. Their availability, processing, and terms may affect the service. The operator should identify the providers used in the deployed instance and link to their current notices in the privacy policy.</p></section>
+    <section><h2>6. Availability and changes</h2><p>Features may be changed, interrupted, or unavailable because of maintenance, provider limits, network issues, or technical failures. The operator should not promise uninterrupted availability unless it can support that commitment.</p></section>
+    <section><h2>7. Disclaimers and applicable law</h2><p>To the extent permitted by applicable law, the service is provided without a guarantee that every output will be accurate, complete, or available at all times. The operator must identify the contracting entity, applicable jurisdiction, and any legally required consumer notices before launch. Nothing in these terms removes rights that cannot lawfully be excluded.</p></section>
+    <section><h2>8. Updates and contact</h2><p>These terms should be revised when the service or its legal requirements change. The operator must publish a valid contact address and the date of the latest substantive revision.</p></section>`;
+
+  const sections = isPrivacy ? privacySections : termsSections;
+  const notice = `<aside class="legal-review-notice" role="note"><strong>Required before public launch</strong><p>Add the real operator or business name, a monitored contact email, the applicable jurisdiction, and confirmed data-retention details. The current API has no built-in user authentication or per-user data isolation. Add and test access controls before exposing real student material publicly. Review this page against the live hosting and API configuration. These details are not inferred or invented in this project.</p></aside>`;
+  $("#view").innerHTML = `
+    <article class="legal-page">
+      <header class="legal-page-header"><p class="eyebrow">CAMPUS STUDY DESK</p><h1>${title}</h1><p class="legal-updated">Last reviewed: 19 October 2026</p><p class="legal-intro">${intro}</p></header>
+      ${notice}
+      <div class="legal-content">${sections}</div>
+      <p class="legal-back"><a href="#/dashboard">Back to dashboard</a></p>
+    </article>`;
+}
 
 function renderInfo() {
   const lec = lectures.find((l) => l.id === current);
@@ -431,21 +474,21 @@ function viewDashboard() {
 
   $("#view").innerHTML = `
     <div class="page-head">
-      <div><div class="eyebrow">YOUR PERSONAL LEARNING HUB</div><h1>Welcome back, learner <span aria-hidden="true">✦</span></h1><p>Small steps today. Strong understanding tomorrow.</p></div>
+      <div><div class="eyebrow">CAMPUS STUDY DESK</div><h1>Your study dashboard</h1><p>Manage lecture recordings and review your course material.</p></div>
       <div class="today-label">${ico("calendar-days")} ${esc(today)}</div>
     </div>
     <section class="welcome-hero">
       <div class="hero-copy">
-        <div class="hero-tag">${ico("sparkles")} YOUR STUDY SPACE, SUPERCHARGED</div>
-        <h1>Make today a little smarter.</h1>
-        <p>Turn class recordings into clear notes, ask questions about your lectures, and check what you have learned — all in one place.</p>
+        <div class="hero-tag">LECTURE WORKSPACE</div>
+        <h1>Turn lectures into study material.</h1>
+        <p>Upload an audio or video recording to create searchable notes, ask questions grounded in the lecture, and generate practice quizzes.</p>
         <div class="hero-actions">
           <button type="button" class="btn btn-white" id="choose-file">${ico("upload")} Add a lecture</button>
           <a href="#/lectures" class="btn btn-translucent">Explore library ${ico("arrow-up-right")}</a>
         </div>
         <input type="file" id="file" accept="video/*,audio/*" hidden>
       </div>
-      <div class="hero-art" aria-hidden="true"><div class="art-glow"></div><div class="study-illustration"><div class="book"><span></span><span></span><span></span><span></span><span></span></div><div class="mini-card check">${ico("check-circle")}</div><div class="mini-card spark">${ico("sparkles")}</div><div class="pencil"></div></div></div>
+      
     </section>
     <section id="picked-card" class="info-card picked-upload" hidden>
       <div class="picked-file-icon">${ico("file-text")}</div><div class="picked-file-copy"><strong id="fname">Selected lecture</strong><small id="file-detail">Ready to process</small></div>
@@ -461,7 +504,7 @@ function viewDashboard() {
     <section id="prog" class="processing-card" hidden><div class="processing-heading"><span class="processing-spinner"></span><div><strong>Preparing your study workspace</strong><p id="stage">Uploading...</p></div></div><div class="bar"><i id="barfill"></i></div></section>
 
     <section class="metrics-grid" aria-label="Study library statistics">
-      <article class="metric-card"><div class="metric-icon purple">${ico("library")}</div><div class="metric-copy"><div class="metric-label">Saved lectures</div><div class="metric-value">${lectures.length}</div><div class="metric-foot">${lectures.length ? "Ready when you are" : "Your library starts here"}</div></div></article>
+      <article class="metric-card"><div class="metric-icon primary">${ico("library")}</div><div class="metric-copy"><div class="metric-label">Saved lectures</div><div class="metric-value">${lectures.length}</div><div class="metric-foot">${lectures.length ? "Ready when you are" : "Your library starts here"}</div></div></article>
       <article class="metric-card"><div class="metric-icon mint">${ico("layers")}</div><div class="metric-copy"><div class="metric-label">Knowledge chunks</div><div class="metric-value">${totalChunks.toLocaleString()}</div><div class="metric-foot">Searchable lecture passages</div></div></article>
       <article class="metric-card"><div class="metric-icon peach">${ico("brain")}</div><div class="metric-copy"><div class="metric-label">Study tools</div><div class="metric-value">5</div><div class="metric-foot">Chat, summary, detailed notes, quiz and evaluation</div></div></article>
     </section>
@@ -507,7 +550,7 @@ function viewDashboard() {
     $("#file-detail").textContent = `${(file.size / 1048576).toFixed(1)} MB · Ready to process`;
     pickedCard.hidden = false;
     syncReferenceCard();
-    pickedCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    pickedCard.scrollIntoView({ behavior: "auto", block: "nearest" });
   };
   $("#cancel-file").onclick = () => {
     fileInput.value = "";
@@ -1068,7 +1111,7 @@ function tabSummary(el, alive = () => true) {
         link.addEventListener("click", (event) => {
           event.preventDefault();
           const target = el.querySelector(`[id="${link.dataset.summaryTarget}"]`);
-          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+          target?.scrollIntoView({ behavior: "auto", block: "start" });
         });
       });
       el.querySelector("#copy-summary").onclick = () => copyText(text, "Summary copied");
@@ -1144,7 +1187,7 @@ function tabDetailedNotes(el, alive = () => true) {
         link.addEventListener("click", (event) => {
           event.preventDefault();
           const target = el.querySelector(`[id="${link.dataset.detailedTarget}"]`);
-          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+          target?.scrollIntoView({ behavior: "auto", block: "start" });
         });
       });
       el.querySelector("#copy-detailed-notes").onclick = () => copyText(text, "Detailed notes copied");

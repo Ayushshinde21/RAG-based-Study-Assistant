@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Campus Study Desk">
+  <rect x="3" y="3" width="58" height="58" rx="7" fill="#176b63"/>
+  <path d="M13 17.5c7.7-2.5 14.1-.8 19 3.5v27c-4.9-4.3-11.3-6-19-3.5z" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M51 17.5c-7.7-2.5-14.1-.8-19 3.5v27c4.9-4.3 11.3-6 19-3.5z" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M18 25h8M18 31h8M38 25h8M38 31h8" stroke="#c5e4df" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
