@@ -6,7 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     TOKENIZERS_PARALLELISM=false \
     WARMUP=1 \
     MAX_UPLOAD_MB=30 \
-    YOUTUBE_ENABLED=0
+    YOUTUBE_ENABLED=0 \
+    SESSION_COOKIE_SECURE=1
 
 # ffmpeg decodes audio; nodejs is used by yt-dlp for YouTube
 RUN apt-get update \

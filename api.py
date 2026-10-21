@@ -16,17 +16,21 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+import auth_store
 
 ALLOWED_EXTENSIONS = {"mp4", "mkv", "avi", "mov", "webm", "mp3", "wav", "m4a", "ogg", "flac"}
 REFERENCE_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
@@ -57,7 +61,89 @@ app = FastAPI(title="Campus Study Desk API", lifespan=lifespan)
 origins = [o.strip() for o in os.getenv(
     "FRONTEND_ORIGINS", "http://127.0.0.1:5500,http://localhost:5500"
 ).split(",") if o.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-CSRF-Token"],
+    allow_credentials=True,
+)
+
+SESSION_COOKIE = "campus_session"
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_RATE_WINDOW_SECONDS = 300
+LOGIN_RATE_LIMIT = 12
+
+
+def current_user(request: Request) -> dict:
+    session = auth_store.get_session(request.cookies.get(SESSION_COOKIE))
+    if not session:
+        raise HTTPException(status_code=401, detail="Please sign in to continue.")
+    request.state.csrf_token = session["csrf_token"]
+    return session["user"]
+
+
+def require_roles(*roles: str):
+    def dependency(user: dict = Depends(current_user)) -> dict:
+        if user["role"] not in roles:
+            raise HTTPException(status_code=403, detail="Your account does not have permission to do that.")
+        return user
+    return dependency
+
+
+STUDENT_OR_ADMIN = require_roles("student", "admin")
+FARMER_ONLY = require_roles("farmer")
+ADMIN_ONLY = require_roles("admin")
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    if request.method in {"POST", "PATCH", "DELETE", "PUT"} and request.url.path.startswith("/api/"):
+        public_auth_routes = {"/api/auth/login", "/api/auth/register"}
+        if request.url.path not in public_auth_routes and request.cookies.get(SESSION_COOKIE):
+            session = auth_store.get_session(request.cookies.get(SESSION_COOKIE))
+            supplied = request.headers.get("x-csrf-token", "")
+            if not session or not supplied or not secrets_compare(supplied, session["csrf_token"]):
+                return JSONResponse(status_code=403, content={"detail": "Your security token is missing or expired. Refresh the page and try again."})
+    return await call_next(request)
+
+
+def secrets_compare(left: str, right: str) -> bool:
+    import hmac
+    return hmac.compare_digest(left, right)
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE, token, max_age=auth_store.SESSION_TTL_SECONDS,
+        httponly=True, secure=SESSION_COOKIE_SECURE, samesite="strict", path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True,
+                           secure=SESSION_COOKIE_SECURE, samesite="strict")
+
+
+def lecture_belongs_to_user(lecture: dict, user: dict) -> bool:
+    if user["role"] == "admin":
+        return True
+    if user["role"] != "student":
+        return False
+    try:
+        return lecture.get("owner_user_id") is not None and int(lecture["owner_user_id"]) == int(user["id"])
+    except (TypeError, ValueError):
+        return False
+
+
+def require_lecture_access(lecture_id: str, user: dict) -> dict:
+    from core.vector_store import get_lecture
+    lecture = get_lecture(lecture_id)
+    if not lecture or not lecture_belongs_to_user(lecture, user):
+        # Use 404 rather than confirming that another user's lecture exists.
+        raise HTTPException(404, "Lecture not found")
+    return lecture
 
 # ── In-memory state (replaces st.session_state) ──────────────────────────────
 JOBS: dict[str, dict] = {}                 # job_id -> progress of a processing run
@@ -178,7 +264,7 @@ def set_step(job: dict, i: int):
     job["step"], job["stage"] = i + 1, STEPS[i]
 
 
-def run_job(job_id: str, source: str, is_url: bool, reference_files: list[dict] | None = None):
+def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, reference_files: list[dict] | None = None):
     job = JOBS[job_id]
     reference_files = reference_files or []
     job.setdefault("warnings", [])
@@ -263,7 +349,8 @@ def run_job(job_id: str, source: str, is_url: bool, reference_files: list[dict] 
             set_step(job, 5)
             title = os.path.splitext(os.path.basename(audio_path))[0]
             lecture_id = register_lecture(title=title, collection_name=collection,
-                                          num_chunks=len(docs), transcript_path=transcript_path)
+                                          num_chunks=len(docs), transcript_path=transcript_path,
+                                          owner_user_id=owner_user_id)
             RUNTIME[lecture_id] = {"docs": docs, "dense": dense, "bm25": bm25}
 
         job.update(status="done", lecture_id=lecture_id, stage="Workspace ready")
@@ -292,9 +379,10 @@ def new_job() -> str:
     return job_id
 
 
-def start_job(source: str, is_url: bool, reference_files: list[dict] | None = None):
+def start_job(source: str, is_url: bool, owner_user_id: int, reference_files: list[dict] | None = None):
     job_id = new_job()
-    thread = threading.Thread(target=run_job, args=(job_id, source, is_url, reference_files), daemon=True)
+    JOBS[job_id]["owner_user_id"] = owner_user_id
+    thread = threading.Thread(target=run_job, args=(job_id, source, is_url, owner_user_id, reference_files), daemon=True)
     thread.start()
     return job_id, thread
 
@@ -325,6 +413,87 @@ def job_events(job_id: str, thread: threading.Thread):
 
 
 # ── Routes: health + processing ──────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=12, max_length=256)
+    role: Literal["student", "farmer"] = "student"
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/api/auth/register")
+def register(req: RegisterRequest, response: Response, request: Request):
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = [t for t in LOGIN_ATTEMPTS.get(client, []) if now - t < LOGIN_RATE_WINDOW_SECONDS]
+    LOGIN_ATTEMPTS[client] = attempts
+    if len(attempts) >= LOGIN_RATE_LIMIT:
+        raise HTTPException(429, "Too many authentication attempts. Try again in a few minutes.")
+    attempts.append(now)
+    LOGIN_ATTEMPTS[client] = attempts
+    try:
+        user = auth_store.create_user(req.email, req.display_name, req.password, req.role)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    token, csrf_token = auth_store.create_session(user["id"])
+    set_session_cookie(response, token)
+    return {"user": user, "csrf_token": csrf_token}
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest, response: Response, request: Request):
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = [t for t in LOGIN_ATTEMPTS.get(client, []) if now - t < LOGIN_RATE_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_RATE_LIMIT:
+        LOGIN_ATTEMPTS[client] = attempts
+        raise HTTPException(429, "Too many login attempts. Try again in a few minutes.")
+    attempts.append(now)
+    LOGIN_ATTEMPTS[client] = attempts
+    user = auth_store.authenticate_user(req.email, req.password)
+    if not user:
+        raise HTTPException(401, "Email or password is incorrect, or the account is disabled.")
+    LOGIN_ATTEMPTS[client] = []
+    token, csrf_token = auth_store.create_session(user["id"])
+    set_session_cookie(response, token)
+    return {"user": user, "csrf_token": csrf_token}
+
+
+@app.get("/api/auth/me")
+def me(request: Request, user: dict = Depends(current_user)):
+    session = auth_store.get_session(request.cookies.get(SESSION_COOKIE))
+    return {"user": user, "csrf_token": session["csrf_token"]}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response, user: dict = Depends(current_user)):
+    auth_store.revoke_session(request.cookies.get(SESSION_COOKIE))
+    clear_session_cookie(response)
+    return {"logged_out": True}
+
+
+@app.get("/api/admin/users")
+def admin_users(user: dict = Depends(ADMIN_ONLY)):
+    return auth_store.list_users()
+
+
+class ActiveUserRequest(BaseModel):
+    is_active: bool
+
+
+@app.patch("/api/admin/users/{user_id}/active")
+def change_user_active(user_id: int, req: ActiveUserRequest, user: dict = Depends(ADMIN_ONLY)):
+    if user_id == user["id"] and not req.is_active:
+        raise HTTPException(400, "You cannot disable your own active administrator account.")
+    if not auth_store.set_user_active(user_id, req.is_active):
+        raise HTTPException(404, "User not found")
+    return {"user_id": user_id, "is_active": req.is_active}
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -435,7 +604,7 @@ def extract_reference_text(path: str, filename: str) -> str:
 
 
 @app.post("/api/lectures/upload")
-def upload(file: UploadFile = File(...), reference_files: list[UploadFile] = File(default=[])):
+def upload(file: UploadFile = File(...), reference_files: list[UploadFile] = File(default=[]), user: dict = Depends(STUDENT_OR_ADMIN)):
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, "Unsupported file type. Use: " + ", ".join(sorted(ALLOWED_EXTENSIONS)))
@@ -460,7 +629,7 @@ def upload(file: UploadFile = File(...), reference_files: list[UploadFile] = Fil
         except OSError:
             pass
         raise
-    job_id, thread = start_job(path, False, notes)
+    job_id, thread = start_job(path, False, user["id"], notes)
     return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
 
 
@@ -469,7 +638,7 @@ class YouTubeRequest(BaseModel):
 
 
 @app.post("/api/lectures/youtube")
-async def from_youtube(request: Request):
+async def from_youtube(request: Request, user: dict = Depends(STUDENT_OR_ADMIN)):
     # Keep support for existing JSON clients while accepting multipart form data
     # from the frontend when lecturer documents are attached.
     content_type = request.headers.get("content-type", "").lower()
@@ -490,23 +659,26 @@ async def from_youtube(request: Request):
     if not valid_youtube_url(url):
         raise HTTPException(400, "Please provide a link to a single YouTube video.")
     notes = _save_reference_uploads(reference_uploads)
-    job_id, thread = start_job(url, True, notes)
+    job_id, thread = start_job(url, True, user["id"], notes)
     return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
 
 
 @app.get("/api/jobs/{job_id}")
-def job_status(job_id: str):
+def job_status(job_id: str, user: dict = Depends(STUDENT_OR_ADMIN)):
     job = JOBS.get(job_id)
-    if not job:
+    if not job or (user["role"] != "admin" and job.get("owner_user_id") != user["id"]):
         raise HTTPException(404, "Job not found")
-    return job
+    return {k: v for k, v in job.items() if k != "owner_user_id"}
 
 
 # ── Routes: library (My Lectures) ────────────────────────────────────────────
 @app.get("/api/lectures")
-def lectures():
+def lectures(user: dict = Depends(STUDENT_OR_ADMIN)):
     from core.vector_store import list_lectures
-    return [with_title(l) for l in list_lectures()]
+    items = list_lectures()
+    if user["role"] != "admin":
+        items = [l for l in items if lecture_belongs_to_user(l, user)]
+    return [with_title(l) for l in items]
 
 
 class RenameRequest(BaseModel):
@@ -514,10 +686,8 @@ class RenameRequest(BaseModel):
 
 
 @app.patch("/api/lectures/{lecture_id}")
-def rename(lecture_id: str, req: RenameRequest):
-    from core.vector_store import get_lecture
-    if not get_lecture(lecture_id):
-        raise HTTPException(404, "Lecture not found")
+def rename(lecture_id: str, req: RenameRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     with TITLE_LOCK:
         titles = load_titles()
         titles[lecture_id] = req.title.strip()
@@ -526,10 +696,9 @@ def rename(lecture_id: str, req: RenameRequest):
 
 
 @app.delete("/api/lectures/{lecture_id}")
-def remove(lecture_id: str):
-    from core.vector_store import get_lecture, delete_lecture
-    if not get_lecture(lecture_id):
-        raise HTTPException(404, "Lecture not found")
+def remove(lecture_id: str, user: dict = Depends(STUDENT_OR_ADMIN)):
+    from core.vector_store import delete_lecture
+    require_lecture_access(lecture_id, user)
     delete_lecture(lecture_id)
     with TITLE_LOCK:
         titles = load_titles()
@@ -554,8 +723,9 @@ def source_payload(docs) -> list[dict]:
 
 
 @app.post("/api/lectures/{lecture_id}/chat")
-def chat(lecture_id: str, req: ChatRequest):
+def chat(lecture_id: str, req: ChatRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
     """Streams newline-delimited JSON: one 'sources' line, many 'token' lines, then 'done'."""
+    require_lecture_access(lecture_id, user)
     engine = get_engine(lecture_id, req.session_id)
     try:
         stream, sources, save = engine.prepare_stream(req.question.strip())
@@ -578,13 +748,15 @@ def chat(lecture_id: str, req: ChatRequest):
 
 
 @app.post("/api/lectures/{lecture_id}/chat/reset")
-def reset_chat(lecture_id: str, session_id: str = "default"):
+def reset_chat(lecture_id: str, session_id: str = "default", user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     ENGINES.pop((lecture_id, session_id), None)
     return {"reset": True}
 
 
 @app.get("/api/lectures/{lecture_id}/summary")
-def summary(lecture_id: str, refresh: bool = False):
+def summary(lecture_id: str, refresh: bool = False, user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     if refresh or lecture_id not in SUMMARIES:
         from features.summarizer import summarize
         docs = get_runtime(lecture_id)["docs"]
@@ -596,7 +768,8 @@ def summary(lecture_id: str, refresh: bool = False):
 
 
 @app.get("/api/lectures/{lecture_id}/detailed-notes")
-def detailed_notes(lecture_id: str, refresh: bool = False):
+def detailed_notes(lecture_id: str, refresh: bool = False, user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     if refresh or lecture_id not in DETAILED_NOTES:
         from features.detailed_notes import generate_detailed_notes
         docs = get_runtime(lecture_id)["docs"]
@@ -612,7 +785,8 @@ class QuizRequest(BaseModel):
 
 
 @app.post("/api/lectures/{lecture_id}/quiz")
-def quiz(lecture_id: str, req: QuizRequest):
+def quiz(lecture_id: str, req: QuizRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     from features.quiz_generator import generate_quiz
     docs = get_runtime(lecture_id)["docs"]
     try:
@@ -634,7 +808,8 @@ class EvalRequest(BaseModel):
 
 
 @app.post("/api/lectures/{lecture_id}/evaluate")
-def evaluate(lecture_id: str, req: EvalRequest):
+def evaluate(lecture_id: str, req: EvalRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
+    require_lecture_access(lecture_id, user)
     from features.evaluator import quick_evaluate
     engine = get_engine(lecture_id, "eval-" + uuid.uuid4().hex[:8])  # fresh memory, not the chat's
     items = [i.model_dump() for i in req.items if i.question.strip() and i.ground_truth.strip()]
@@ -648,6 +823,69 @@ def evaluate(lecture_id: str, req: EvalRequest):
         for k in [k for k in ENGINES if k[0] == lecture_id and k[1].startswith("eval-")]:
             ENGINES.pop(k, None)
     return {"scores": scores, "n": len(items)}
+
+
+class FarmCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    location: str = Field(default="", max_length=200)
+    crop: str = Field(default="", max_length=120)
+    soil_moisture: float | None = Field(default=None, ge=0, le=100)
+    temperature_c: float | None = Field(default=None, ge=-50, le=80)
+    humidity_pct: float | None = Field(default=None, ge=0, le=100)
+    notes: str = Field(default="", max_length=5000)
+
+
+class FarmUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    location: str | None = Field(default=None, max_length=200)
+    crop: str | None = Field(default=None, max_length=120)
+    soil_moisture: float | None = Field(default=None, ge=0, le=100)
+    temperature_c: float | None = Field(default=None, ge=-50, le=80)
+    humidity_pct: float | None = Field(default=None, ge=0, le=100)
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+@app.get("/api/farms")
+def farms(user: dict = Depends(FARMER_ONLY)):
+    return auth_store.list_farms(user["id"])
+
+
+@app.post("/api/farms")
+def create_farm(req: FarmCreateRequest, user: dict = Depends(FARMER_ONLY)):
+    data = req.model_dump()
+    data["name"] = data["name"].strip()
+    if not data["name"]:
+        raise HTTPException(400, "Farm name cannot be empty.")
+    return auth_store.create_farm(user["id"], data)
+
+
+@app.get("/api/farms/{farm_id}")
+def farm_detail(farm_id: str, user: dict = Depends(FARMER_ONLY)):
+    farm = auth_store.get_farm(farm_id)
+    if not farm or farm["owner_user_id"] != user["id"]:
+        raise HTTPException(404, "Farm not found")
+    return farm
+
+
+@app.patch("/api/farms/{farm_id}")
+def edit_farm(farm_id: str, req: FarmUpdateRequest, user: dict = Depends(FARMER_ONLY)):
+    current = auth_store.get_farm(farm_id)
+    if not current or current["owner_user_id"] != user["id"]:
+        raise HTTPException(404, "Farm not found")
+    updated = auth_store.update_farm(farm_id, user["id"], req.model_dump(exclude_unset=True))
+    if not updated:
+        raise HTTPException(404, "Farm not found")
+    return updated
+
+
+@app.delete("/api/farms/{farm_id}")
+def remove_farm(farm_id: str, user: dict = Depends(FARMER_ONLY)):
+    farm = auth_store.get_farm(farm_id)
+    if not farm or farm["owner_user_id"] != user["id"]:
+        raise HTTPException(404, "Farm not found")
+    if not auth_store.delete_farm(farm_id, user["id"]):
+        raise HTTPException(404, "Farm not found")
+    return {"deleted": farm_id}
 
 
 # ── Optional: serve the frontend from the same server (one deployment, no CORS) ─

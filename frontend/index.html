@@ -11,25 +11,22 @@
   <link rel="stylesheet" href="style.css">
   <script>window.API_BASE = "";</script>
 </head>
-<body>
+<body class="auth-screen">
   <div class="app">
     <aside class="side">
       <a class="brand" href="#/dashboard" aria-label="Campus Study Desk home">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5 12 4l9 4.5-9 4.5L3 8.5Z"/><path d="M6.5 10.5v5.2c3.4 2.4 7.6 2.4 11 0v-5.2M21 9v6"/></svg></span>
         <span class="brand-copy"><strong>Campus</strong><small>STUDY DESK</small></span>
       </a>
-      <div class="nav-caption">YOUR SPACE</div>
+      <a href="#/dashboard" class="new-lecture-nav" aria-label="Start a new study session"><span data-icon="plus"></span><span>New lecture</span></a>
+      <div class="nav-caption">Library</div>
       <nav id="nav" aria-label="Main navigation">
         <a href="#/dashboard" data-r="dashboard"><span class="nav-icon" data-icon="grid"></span><span>Dashboard</span></a>
         <a href="#/lectures" data-r="lectures"><span class="nav-icon" data-icon="library"></span><span>My Lectures</span><span class="nav-count" id="nav-count">0</span></a>
         <a href="#/workspace" data-r="workspace"><span class="nav-icon" data-icon="brain"></span><span>Study Workspace</span></a>
+        <a href="#/farms" data-r="farms" hidden><span class="nav-icon" data-icon="sprout"></span><span>Farm data</span></a>
+        <a href="#/admin" data-r="admin" hidden><span class="nav-icon" data-icon="shield-check"></span><span>Administration</span></a>
       </nav>
-      <div class="sidebar-promo">
-        <div class="promo-orbit"><span data-icon="sparkles"></span></div>
-        <strong>Lecture tools in one place.</strong>
-        <p>Create notes, ask questions, and practise from your course material.</p>
-        <a href="#/lectures" class="promo-link">Open lecture library <span data-icon="arrow-up-right"></span></a>
-      </div>
       <div class="side-bottom">
         <div class="side-note"><span class="online-dot"></span><span>Designed for lecture-based study</span></div>
         <button id="theme" class="theme-toggle" type="button"><span data-icon="moon"></span><span class="theme-label">Dark appearance</span><span class="toggle-track"><i></i></span></button>
@@ -43,7 +40,8 @@
           <label class="global-search"><button type="button" class="search-icon" id="searchToggle" aria-label="Search lectures"><span data-icon="search"></span></button><input id="globalSearch" type="search" placeholder="Search your lectures..." aria-label="Search your lectures"><kbd>↵</kbd></label>
           <button class="icon-button theme-mobile" id="themeMobile" type="button" aria-label="Switch to dark appearance" aria-pressed="false"><span data-icon="moon"></span></button>
           <button class="icon-button" id="notify" type="button" aria-label="Notifications"><span data-icon="bell"></span><i></i></button>
-          <div class="profile-chip" aria-label="Student profile"><span class="avatar">S</span><span class="profile-copy"><strong>Student</strong><small>Learning space</small></span><span class="profile-caret" data-icon="chevron-down"></span></div>
+          <div class="profile-chip" aria-label="Signed-in account"><span class="avatar" id="profile-avatar">U</span><span class="profile-copy"><strong id="profile-name">Account</strong><small id="profile-role">Signed out</small></span></div>
+          <button type="button" class="btn btn-sm" id="logout" hidden>Sign out</button>
         </div>
       </header>
       <main id="view" tabindex="-1"></main>

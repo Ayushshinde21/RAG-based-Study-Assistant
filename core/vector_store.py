@@ -149,7 +149,8 @@ def _save_registry(lectures: list[dict]):
 
 
 def register_lecture(title: str, collection_name: str, num_chunks: int,
-                      transcript_path: str | None = None) -> str:
+                      transcript_path: str | None = None,
+                      owner_user_id: int | None = None) -> str:
     """Add a newly processed lecture to the registry. Returns its lecture_id."""
     lecture_id = collection_name  # collection_name is already unique per lecture
     lectures = _load_registry()
@@ -159,6 +160,7 @@ def register_lecture(title: str, collection_name: str, num_chunks: int,
         "collection_name": collection_name,
         "num_chunks": num_chunks,
         "transcript_path": transcript_path,
+        "owner_user_id": owner_user_id,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
     _save_registry(lectures)

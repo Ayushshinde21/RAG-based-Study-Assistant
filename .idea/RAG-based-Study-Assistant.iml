@@ -3,6 +3,36 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/audio_files" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/0f8ba720-3229-48e4-9ea2-30e1c5bcd675" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/1855ae7d-ca04-418a-b52f-f647c01c8f05" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/20f92525-e6f7-49c0-9a01-2d016bcbf3bb" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/274e58bf-53ce-4436-9d55-6f23a154ed7a" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/2faeb116-555d-4982-a809-e55758d3aa2d" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/3ff1c2bc-118a-4eee-a6f9-aad7e94b9bc5" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/46ff697a-95ab-4c59-8037-813bbc84fbde" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/4bbe6e01-c42d-47d0-9cf8-9b1a1f268ece" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/572e2d0b-5248-4c17-afab-ee4777b0ed16" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/5eb6e6fe-b3e2-47b4-ad19-df0c1a17e194" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/61c911d6-811c-4b75-8e96-f6460e0330cb" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/68bbf3d8-815a-4a24-a71f-8f17c11717b1" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/6a7476ec-b003-43d1-9dca-dcbac9142fd6" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/880f90a4-faa3-4c30-a71d-6af24ed9d699" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/8984348e-0374-4af6-a80a-4bc6c96a6cca" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/8eecbf54-455d-4dd4-835b-ff781bd6d6f9" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/9992e64b-0dc0-47d3-9f2e-01662717f44b" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/a0c903a0-5054-44de-8c2d-37e57697f3c1" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/af590e96-b8eb-47ac-83dc-e05373768f19" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/b942fa2a-6daf-4cfe-9b12-72d933145efe" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/cc62932b-5d59-4ce6-b52e-8bb7e335ef98" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/d318f856-2a0b-4a9f-bfed-d90efbe966a0" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/e7dc9064-522f-4603-a656-0c100398cb93" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/e8ffb445-0d11-405d-9072-cd2f0a975c07" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/ea4340e3-1912-47ad-873b-2279ed7c1332" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/f323bac8-3080-4b1a-938d-99d5be1a56ba" />
+      <excludeFolder url="file://$MODULE_DIR$/chroma_db/f701ff38-e88b-40e5-8215-19c2db45986b" />
+      <excludeFolder url="file://$MODULE_DIR$/transcripts" />
+      <excludeFolder url="file://$MODULE_DIR$/utils/audio_files" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.13 (RAG-based-Study-Assistant)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

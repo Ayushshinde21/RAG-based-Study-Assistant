@@ -1,6 +1,8 @@
 .env
 .env.*
+!.env.example
 cookies.txt
+cookies*.txt
 .venv/
 venv/
 __pycache__/
@@ -10,6 +12,16 @@ chroma_db/
 transcripts/
 audio_files/
 lecture_titles.json
+auth.sqlite3
+auth.sqlite3-shm
+auth.sqlite3-wal
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+uploads/
+storage/
 tests/
 old/
 app.py

@@ -37,6 +37,8 @@ const ICONS = {
   'file-check': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6m-12 5 2 2 4-4"/>',
   'panel-right': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   'play-circle': '<circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/>',
+  sprout: '<path d="M12 21v-9"/><path d="M12 12C5 12 3 8 3 4c6 0 9 3 9 8Z"/><path d="M12 16c0-6 3-10 9-10 0 5-2 10-9 10Z"/>',
+  'shield-check': '<path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/>',
 };
 const ico = (name, cls = "") => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.sparkles}</svg>`;
 const paintIcons = (scope = document) => scope.querySelectorAll("[data-icon]").forEach((el) => { el.innerHTML = ico(el.dataset.icon); });
@@ -248,16 +250,32 @@ const sid = store.get("sid") || (() => { const v = Math.random().toString(36).sl
 let current = store.get("lecture") || null;
 let lectures = [];
 let serverOnline = false;
+let currentUser = null;
+let csrfToken = "";
+let authLoaded = false;
+let authMode = "login";
 let pendingWorkspaceTab = null;
 let pendingSearch = "";
 let pendingChatPrompt = null;
 const chats = {};
 
 async function api(path, opts = {}) {
-  const res = await fetch(API + "/api" + path, opts);
+  const method = String(opts.method || "GET").toUpperCase();
+  const headers = new Headers(opts.headers || {});
+  if (csrfToken && ["POST", "PATCH", "DELETE", "PUT"].includes(method) && !path.startsWith("/auth/login") && !path.startsWith("/auth/register")) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+  const res = await fetch(API + "/api" + path, { credentials: "include", ...opts, method, headers });
   if (!res.ok) {
     let d = res.statusText;
     try { const j = await res.json(); d = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || d); } catch {}
+    if (res.status === 401 && currentUser && !path.startsWith("/auth/")) {
+      currentUser = null;
+      csrfToken = "";
+      authLoaded = true;
+      updateShell();
+      renderAuthScreen("login", "Your session expired. Sign in again.");
+    }
     throw new Error(d);
   }
   return res.json();
@@ -321,23 +339,57 @@ searchInput.addEventListener("keydown", (e) => {
 // Router
 let routeSeq = 0;
 async function route() {
-  const seq = ++routeSeq; // a newer navigation invalidates this one
-  const [, page = "dashboard", id] = location.hash.split("/");
+  const seq = ++routeSeq;
+  const routeParts = location.hash.replace(/^#\/?/, "").split("/");
+  const page = routeParts[0] || "dashboard";
+  const id = routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   document.querySelector(".app")?.classList.toggle("workspace-mode", page === "workspace");
   const isLegalPage = page === "privacy" || page === "terms";
   document.querySelector(".app")?.classList.toggle("legal-mode", isLegalPage);
-  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace", privacy: "Privacy policy", terms: "Terms and conditions" };
+  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace", privacy: "Privacy policy", terms: "Terms and conditions", farms: "Farm data", admin: "Administration" };
   $("#top-page").textContent = labels[page] || "Overview";
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === page));
-  if (id) { current = id; store.set("lecture", id); }
   if (isLegalPage) {
+    updateShell();
     viewLegalPage(page);
     return;
   }
+  if (!authLoaded) return;
+  if (!currentUser) {
+    updateShell();
+    renderAuthScreen(authMode);
+    return;
+  }
+  if (currentUser.role === "farmer" && page !== "farms") {
+    location.hash = "#/farms";
+    return;
+  }
+  if (currentUser.role === "student" && (page === "farms" || page === "admin")) {
+    location.hash = "#/dashboard";
+    return;
+  }
+  if (currentUser.role === "admin" && page === "farms") {
+    location.hash = "#/admin";
+    return;
+  }
+  if (currentUser.role !== "admin" && page === "admin") {
+    location.hash = currentUser.role === "farmer" ? "#/farms" : "#/dashboard";
+    return;
+  }
+  updateShell();
+  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.r === page));
+  if (page === "farms") {
+    await viewFarms();
+    return;
+  }
+  if (page === "admin") {
+    await viewAdmin();
+    return;
+  }
+  if (id) { current = id; store.set("lecture", id); }
   let loadError = null;
   try {
     const data = await api("/lectures");
-    if (seq !== routeSeq) return; // user already navigated somewhere else
+    if (seq !== routeSeq) return;
     lectures = data;
     serverOnline = true;
   } catch (e) {
@@ -347,6 +399,7 @@ async function route() {
     loadError = e.message || "Unknown error";
   }
   if (loadError) {
+    if (!currentUser) return;
     $("#view").innerHTML = `<section class="load-error" role="alert"><h2>We couldn't load your lectures</h2><p>${esc(loadError)}</p><button type="button" class="btn" id="retry-load">Try again</button></section>`;
     $("#retry-load").onclick = () => route();
     renderInfo();
@@ -359,6 +412,283 @@ async function route() {
   $("#nav-count").textContent = lectures.length;
 }
 window.addEventListener("hashchange", route);
+const newLectureNav = document.querySelector(".new-lecture-nav");
+newLectureNav?.addEventListener("click", (event) => {
+  if (location.hash === "#/dashboard" || location.hash === "") {
+    event.preventDefault();
+    document.querySelector("#choose-file")?.click();
+  }
+});
+
+function updateShell() {
+  const signedIn = Boolean(currentUser);
+  document.body.classList.toggle("auth-screen", !signedIn);
+  const links = {
+    dashboard: signedIn && currentUser.role !== "farmer",
+    lectures: signedIn && currentUser.role !== "farmer",
+    workspace: signedIn && currentUser.role !== "farmer",
+    farms: signedIn && currentUser.role === "farmer",
+    admin: signedIn && currentUser.role === "admin",
+  };
+  Object.entries(links).forEach(([name, visible]) => {
+    const node = document.querySelector(`#nav [data-r="${name}"]`);
+    if (node) node.hidden = !visible;
+  });
+  $("#logout").hidden = !signedIn;
+  $(".global-search").hidden = signedIn && currentUser.role === "farmer";
+  $("#notify").hidden = signedIn && currentUser.role === "farmer";
+  if (signedIn) {
+    $("#profile-name").textContent = currentUser.display_name;
+    $("#profile-role").textContent = currentUser.role.charAt(0).toUpperCase() + currentUser.role.slice(1);
+    $("#profile-avatar").textContent = (currentUser.display_name || currentUser.email || "U").trim().charAt(0).toUpperCase();
+    $(".topbar-context > span:nth-of-type(2)").textContent = currentUser.role === "admin" ? "ADMIN PORTAL" : currentUser.role === "farmer" ? "FARMER PORTAL" : "STUDENT PORTAL";
+  }
+}
+
+function renderAuthScreen(mode = "login", message = "") {
+  authMode = mode === "register" ? "register" : "login";
+  document.body.classList.add("auth-screen");
+  const isRegister = authMode === "register";
+  $("#view").innerHTML = `
+    <section class="auth-layout">
+      <a class="auth-brand" href="#/dashboard"><span class="auth-brand-mark">C</span><span><strong>Campus Study Desk</strong><small>STUDY ASSISTANT</small></span></a>
+      <div class="auth-card">
+        <h1>${isRegister ? "Create your account" : "Welcome back"}</h1>
+        <p class="auth-intro">${isRegister ? "Create an account to get started." : "Sign in to continue to your study space."}</p>
+        <div class="auth-switch" role="group" aria-label="Authentication option"><button type="button" data-auth-mode="login" class="${!isRegister ? "active" : ""}">Sign in</button><button type="button" data-auth-mode="register" class="${isRegister ? "active" : ""}">Create account</button></div>
+        <form id="auth-form" class="auth-form">
+          ${isRegister ? `<label>Full name<input name="display_name" required maxlength="100" autocomplete="name" placeholder="Your name"></label>` : ""}
+          <label>Email address<input name="email" type="email" required maxlength="254" autocomplete="email" placeholder="you@example.com"></label>
+          <label>Password<input name="password" type="password" required minlength="${isRegister ? 12 : 1}" maxlength="256" autocomplete="${isRegister ? "new-password" : "current-password"}" placeholder="${isRegister ? "At least 12 characters" : "Your password"}"></label>
+          ${isRegister ? `<label>Account type<select name="role"><option value="student">Student</option><option value="farmer">Farmer</option></select></label>` : ""}
+          <p class="auth-message" id="auth-message" role="alert" ${message ? "" : "hidden"}>${esc(message)}</p>
+          <button class="btn auth-submit" type="submit">${isRegister ? "Create account" : "Sign in"}</button>
+        </form>
+        <p class="auth-footnote">Admin accounts are created by the site operator.</p>
+        <p class="auth-legal"><a href="#/privacy">Privacy policy</a><a href="#/terms">Terms and conditions</a></p>
+      </div>
+      
+    </section>`;
+  document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+    button.onclick = () => renderAuthScreen(button.dataset.authMode);
+  });
+  $("#auth-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector("button[type=submit]");
+    const messageNode = $("#auth-message");
+    submit.disabled = true;
+    submit.textContent = isRegister ? "Creating account..." : "Signing in...";
+    messageNode.hidden = true;
+    try {
+      const fd = new FormData(form);
+      const payload = {
+        email: String(fd.get("email") || "").trim(),
+        password: String(fd.get("password") || ""),
+      };
+      if (isRegister) {
+        payload.display_name = String(fd.get("display_name") || "").trim();
+        payload.role = String(fd.get("role") || "student");
+      }
+      const result = await api(isRegister ? "/auth/register" : "/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      currentUser = result.user;
+      csrfToken = result.csrf_token;
+      authLoaded = true;
+      authMode = "login";
+      updateShell();
+      location.hash = currentUser.role === "farmer" ? "#/farms" : "#/dashboard";
+      route();
+    } catch (error) {
+      messageNode.textContent = error.message || "Unable to authenticate. Please try again.";
+      messageNode.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = isRegister ? "Create account" : "Sign in";
+    }
+  };
+}
+
+async function bootstrapAuth() {
+  try {
+    const result = await api("/auth/me");
+    currentUser = result.user;
+    csrfToken = result.csrf_token;
+  } catch {
+    currentUser = null;
+    csrfToken = "";
+  }
+  authLoaded = true;
+  updateShell();
+  if (!location.hash) location.hash = currentUser?.role === "farmer" ? "#/farms" : "#/dashboard";
+  await route();
+}
+
+$("#logout").onclick = async () => {
+  try { await api("/auth/logout", { method: "POST" }); } catch {}
+  currentUser = null;
+  csrfToken = "";
+  authLoaded = true;
+  authMode = "login";
+  updateShell();
+  location.hash = "#/dashboard";
+  renderAuthScreen("login", "You have signed out.");
+};
+
+function farmMetric(label, value, suffix = "") {
+  const shown = value === null || value === undefined || value === "" ? "Not recorded" : `${esc(value)}${suffix}`;
+  return `<div class="farm-metric"><span>${label}</span><strong>${shown}</strong></div>`;
+}
+
+async function viewFarms() {
+  if (!currentUser || currentUser.role !== "farmer") {
+    location.hash = currentUser?.role === "admin" ? "#/admin" : "#/dashboard";
+    return;
+  }
+  document.querySelector(".app")?.classList.remove("workspace-mode");
+  $("#info").innerHTML = "";
+  $("#view").innerHTML = `
+    <div class="page-head"><div><div class="eyebrow">PRIVATE FARM SPACE</div><h1>Your farm data</h1><p>Only your account's farm records are returned by the server. Add or update readings as your data changes.</p></div></div>
+    <section class="farm-create-card"><h2>Add farm record</h2><p class="farm-form-intro">Enter the values you have. Blank readings remain marked as not recorded.</p>
+      <form id="farm-create-form" class="farm-form">
+        <label>Farm name<input name="name" required maxlength="120" placeholder="North field"></label>
+        <label>Location<input name="location" maxlength="200" placeholder="Village or area"></label>
+        <label>Crop<input name="crop" maxlength="120" placeholder="Current crop"></label>
+        <label>Soil moisture (%)<input name="soil_moisture" type="number" min="0" max="100" step="0.1" placeholder="0 to 100"></label>
+        <label>Temperature (°C)<input name="temperature_c" type="number" min="-50" max="80" step="0.1" placeholder="Recorded value"></label>
+        <label>Humidity (%)<input name="humidity_pct" type="number" min="0" max="100" step="0.1" placeholder="0 to 100"></label>
+        <label class="farm-notes-field">Notes<textarea name="notes" rows="2" maxlength="5000" placeholder="Optional observations"></textarea></label>
+        <div class="farm-form-actions"><button class="btn" type="submit">Save farm record</button><span id="farm-form-status" role="status"></span></div>
+      </form>
+    </section>
+    <section class="farm-records-section"><div class="section-head"><div class="section-title-wrap"><h2>Saved farm records</h2><p>Records available to this signed-in account.</p></div></div><div id="farm-list"><p class="empty">Loading farm data...</p></div></section>`;
+  const seqAtStart = routeSeq;
+  try {
+    const items = await api("/farms");
+    if (seqAtStart !== routeSeq || !$("#farm-list")) return;
+    renderFarmCards(items);
+  } catch (error) {
+    if (seqAtStart !== routeSeq) return;
+    $("#farm-list").innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  }
+  $("#farm-create-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector("button[type=submit]");
+    const status = $("#farm-form-status");
+    submit.disabled = true;
+    status.textContent = "Saving...";
+    try {
+      await api("/farms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(farmPayload(new FormData(form))) });
+      toast("Farm record saved.");
+      await viewFarms();
+    } catch (error) {
+      status.textContent = error.message;
+      submit.disabled = false;
+    }
+  };
+}
+
+function farmPayload(formData) {
+  const payload = {};
+  for (const field of ["name", "location", "crop", "notes"]) payload[field] = String(formData.get(field) || "").trim();
+  for (const field of ["soil_moisture", "temperature_c", "humidity_pct"]) {
+    const value = String(formData.get(field) || "").trim();
+    payload[field] = value === "" ? null : Number(value);
+  }
+  return payload;
+}
+
+function renderFarmCards(items) {
+  const target = $("#farm-list");
+  if (!items.length) {
+    target.innerHTML = `<div class="farm-empty"><h3>No farm records yet</h3><p>Save a farm record above to begin tracking its available readings.</p></div>`;
+    return;
+  }
+  target.innerHTML = `<div class="farm-cards">${items.map((farm) => `
+    <article class="farm-card">
+      <div class="farm-card-head"><div><div class="eyebrow">YOUR FARM</div><h3>${esc(farm.name)}</h3><p>${esc(farm.location || "Location not recorded")}${farm.crop ? ` · ${esc(farm.crop)}` : ""}</p></div><button type="button" class="ghost danger" data-farm-delete="${esc(farm.id)}">Delete</button></div>
+      <div class="farm-metrics">${farmMetric("Soil moisture", farm.soil_moisture, "%")}${farmMetric("Temperature", farm.temperature_c, " °C")}${farmMetric("Humidity", farm.humidity_pct, "%")}</div>
+      <details class="farm-edit-details"><summary>Edit this record</summary><form class="farm-form farm-edit-form" data-farm-edit="${esc(farm.id)}">
+        <label>Farm name<input name="name" required maxlength="120" value="${esc(farm.name)}"></label>
+        <label>Location<input name="location" maxlength="200" value="${esc(farm.location || "")}"></label>
+        <label>Crop<input name="crop" maxlength="120" value="${esc(farm.crop || "")}"></label>
+        <label>Soil moisture (%)<input name="soil_moisture" type="number" min="0" max="100" step="0.1" value="${farm.soil_moisture ?? ""}"></label>
+        <label>Temperature (°C)<input name="temperature_c" type="number" min="-50" max="80" step="0.1" value="${farm.temperature_c ?? ""}"></label>
+        <label>Humidity (%)<input name="humidity_pct" type="number" min="0" max="100" step="0.1" value="${farm.humidity_pct ?? ""}"></label>
+        <label class="farm-notes-field">Notes<textarea name="notes" rows="2" maxlength="5000">${esc(farm.notes || "")}</textarea></label>
+        <div class="farm-form-actions"><button class="btn btn-sm" type="submit">Save changes</button><span role="status"></span></div>
+      </form></details>
+    </article>`).join("")}</div>`;
+  target.querySelectorAll("form[data-farm-edit]").forEach((form) => {
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const submit = form.querySelector("button[type=submit]");
+      const status = form.querySelector("[role=status]");
+      submit.disabled = true;
+      status.textContent = "Saving...";
+      try {
+        await api(`/farms/${encodeURIComponent(form.dataset.farmEdit)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(farmPayload(new FormData(form))) });
+        toast("Farm record updated.");
+        await viewFarms();
+      } catch (error) {
+        status.textContent = error.message;
+        submit.disabled = false;
+      }
+    };
+  });
+  target.querySelectorAll("[data-farm-delete]").forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm("Delete this farm record? This cannot be undone.")) return;
+      button.disabled = true;
+      try {
+        await api(`/farms/${encodeURIComponent(button.dataset.farmDelete)}`, { method: "DELETE" });
+        toast("Farm record deleted.");
+        await viewFarms();
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    };
+  });
+}
+
+async function viewAdmin() {
+  $("#info").innerHTML = "";
+  $("#view").innerHTML = `<div class="page-head"><div><div class="eyebrow">SITE CONTROL</div><h1>Administration</h1><p>Review registered accounts and disable accounts that should no longer have access.</p></div></div><section class="admin-note"><strong>Admin access is provisioned from the server environment.</strong><p>Set <code>ADMIN_EMAIL</code> and <code>ADMIN_PASSWORD</code> before starting the API. Never create administrator accounts through public registration.</p></section><section class="admin-users-section"><h2>Registered accounts</h2><div id="admin-user-list"><p class="empty">Loading accounts...</p></div></section>`;
+  const seqAtStart = routeSeq;
+  try {
+    const users = await api("/admin/users");
+    if (seqAtStart !== routeSeq || !$("#admin-user-list")) return;
+    if (!users.length) {
+      $("#admin-user-list").innerHTML = `<p class="empty">No accounts found.</p>`;
+      return;
+    }
+    $("#admin-user-list").innerHTML = `<div class="admin-user-list">${users.map((user) => `<article class="admin-user-row"><div class="admin-user-avatar">${esc((user.display_name || user.email).charAt(0).toUpperCase())}</div><div class="admin-user-copy"><strong>${esc(user.display_name)}</strong><span>${esc(user.email)}</span><small>${esc(user.role)} · Created ${esc(fmt(user.created_at))}</small></div><div class="admin-user-action"><span class="account-status ${user.is_active ? "active" : "disabled"}">${user.is_active ? "Active" : "Disabled"}</span>${user.id === currentUser.id ? `<span class="current-account-label">You</span>` : `<button type="button" class="ghost sm" data-user-active="${user.id}" data-next-active="${user.is_active ? "false" : "true"}">${user.is_active ? "Disable" : "Enable"}</button>`}</div></article>`).join("")}</div>`;
+    $("#admin-user-list").querySelectorAll("[data-user-active]").forEach((button) => {
+      button.onclick = async () => {
+        const isActive = button.dataset.nextActive === "true";
+        const action = isActive ? "enable" : "disable";
+        if (!confirm(`Are you sure you want to ${action} this account?`)) return;
+        button.disabled = true;
+        try {
+          await api(`/admin/users/${button.dataset.userActive}/active`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_active: isActive }) });
+          toast(`Account ${isActive ? "enabled" : "disabled"}.`);
+          await viewAdmin();
+        } catch (error) {
+          toast(error.message);
+          button.disabled = false;
+        }
+      };
+    });
+  } catch (error) {
+    if (seqAtStart !== routeSeq) return;
+    $("#admin-user-list").innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  }
+}
 
 
 function viewLegalPage(page) {
@@ -368,16 +698,16 @@ function viewLegalPage(page) {
     ? "This policy explains how Campus Study Desk handles information when you upload lecture material or use its study tools. The deployed operator must confirm the details below before making the service public."
     : "These terms cover your use of Campus Study Desk, including lecture uploads, generated notes, question answering, quizzes, and evaluation tools. The deployed operator must confirm the details below before making the service public.";
   const privacySections = `
-    <section><h2>1. Information the service processes</h2><p>The application can process audio and video recordings, documents, lecture titles, extracted transcripts, text passages created for search, questions you submit, and generated study materials. Operational logs may also contain request details needed to run and troubleshoot the service.</p></section>
+    <section><h2>1. Information the service processes</h2><p>The application can process account details, farm names and manually entered farm readings, audio and video recordings, documents, lecture titles, extracted transcripts, text passages created for search, questions you submit, and generated study materials. Operational logs may also contain request details needed to run and troubleshoot the service.</p></section>
     <section><h2>2. How information is used</h2><p>Material is used to transcribe recordings, build searchable lecture indexes, answer questions, prepare summaries and detailed notes, generate quizzes, and evaluate answers. It may also be used to maintain service security and diagnose failures.</p></section>
     <section><h2>3. External service providers</h2><p>Depending on the enabled features and deployment configuration, the application can send recording content to Sarvam AI for transcription or translation, and send text prompts or evaluation content to Google Gemini or Groq for model-powered features. Review the current terms and privacy notices of each provider used in your deployment. Confirm the active providers before launch and update this section if the configuration changes.</p></section>
     <section><h2>4. Storage and retention</h2><p>Lecture files, transcripts, indexes, and generated material may be stored in the application's configured server storage. This code package does not define a complete automatic retention or deletion schedule. The operator must state how long each data type is kept, how a user can request deletion, and how backups are handled before public release.</p></section>
-    <section><h2>5. Browser storage</h2><p>The frontend uses browser local storage for interface preferences and limited navigation state, such as the chosen colour theme and recently selected lecture. The supplied frontend does not include an advertising tracker. Hosting, reverse proxies, or third-party services may apply their own logging or storage, which must be documented for the deployed service.</p></section>
+    <section><h2>5. Browser storage</h2><p>The frontend uses browser local storage for interface preferences and limited navigation state, such as the chosen colour theme and recently selected lecture. The API uses an HttpOnly, SameSite session cookie and a CSRF token for signed-in sessions. Account and farm records are stored in the configured server database. The operator should confirm and document the exact cookie and storage practices of the production hosting setup. The supplied frontend does not include an advertising tracker. Hosting, reverse proxies, or third-party services may apply their own logging or storage, which must be documented for the deployed service.</p></section>
     <section><h2>6. Your choices</h2><p>Do not upload material unless you have the right to use it for this purpose. Avoid including passwords, payment details, or unrelated sensitive personal information. To request access to or deletion of information, contact the operator using the contact details published on the deployed service.</p></section>
     <section><h2>7. Security</h2><p>The operator should restrict access to uploaded material, protect API credentials, configure transport security, maintain dependencies, and define a response process for incidents. No website or storage system can be guaranteed completely secure.</p></section>
     <section><h2>8. Changes to this policy</h2><p>This policy should be updated when data practices, service providers, hosting, or retention rules change. The operator must publish a working contact address and the date of the latest substantive revision.</p></section>`;
   const termsSections = `
-    <section><h2>1. Purpose of the service</h2><p>Campus Study Desk provides tools for working with course material, including transcription, searchable lecture passages, summaries, detailed notes, question answering, quizzes, and answer evaluation.</p></section>
+    <section><h2>1. Purpose of the service</h2><p>Campus Study Desk provides student lecture tools, administrator account controls, and a farmer workspace for manually managing farm records and readings. Farm records in this release are not live sensor feeds.</p></section>
     <section><h2>2. Your material and permissions</h2><p>You remain responsible for the content you upload and for having the rights or permissions needed to process it. Do not upload material unlawfully, infringe another person's rights, or submit content you are not authorized to share with the service's configured providers.</p></section>
     <section><h2>3. Generated content and accuracy</h2><p>Transcripts, answers, summaries, quizzes, and evaluation results may contain omissions or errors. Check important claims against the original lecture and linked source passages. The service is a study aid, not a substitute for your course instructions, an instructor's judgment, or professional advice.</p></section>
     <section><h2>4. Acceptable use</h2><p>Do not attempt to disrupt the service, bypass access controls, upload malicious files, misuse other people's material, or use the service to violate applicable law. The operator may limit access to protect the service or respond to misuse, subject to applicable law.</p></section>
@@ -387,13 +717,13 @@ function viewLegalPage(page) {
     <section><h2>8. Updates and contact</h2><p>These terms should be revised when the service or its legal requirements change. The operator must publish a valid contact address and the date of the latest substantive revision.</p></section>`;
 
   const sections = isPrivacy ? privacySections : termsSections;
-  const notice = `<aside class="legal-review-notice" role="note"><strong>Required before public launch</strong><p>Add the real operator or business name, a monitored contact email, the applicable jurisdiction, and confirmed data-retention details. The current API has no built-in user authentication or per-user data isolation. Add and test access controls before exposing real student material publicly. Review this page against the live hosting and API configuration. These details are not inferred or invented in this project.</p></aside>`;
+  const notice = `<aside class="legal-review-notice" role="note"><strong>Required before public launch</strong><p>Add the real operator or business name, a monitored contact email, the applicable jurisdiction, and confirmed data-retention details. The application now provides student, farmer, and administrator accounts with role-based API checks. Test these controls in the deployed environment and use shared durable storage before exposing real student or farm records publicly. Review this page against the live hosting and API configuration. These details are not inferred or invented in this project.</p></aside>`;
   $("#view").innerHTML = `
     <article class="legal-page">
-      <header class="legal-page-header"><p class="eyebrow">CAMPUS STUDY DESK</p><h1>${title}</h1><p class="legal-updated">Last reviewed: 19 October 2026</p><p class="legal-intro">${intro}</p></header>
+      <header class="legal-page-header"><p class="eyebrow">CAMPUS STUDY DESK</p><h1>${title}</h1><p class="legal-updated">Last reviewed: 20 October 2026</p><p class="legal-intro">${intro}</p></header>
       ${notice}
       <div class="legal-content">${sections}</div>
-      <p class="legal-back"><a href="#/dashboard">Back to dashboard</a></p>
+      <p class="legal-back"><a href="#/dashboard">Back to portal</a></p>
     </article>`;
 }
 
@@ -473,61 +803,39 @@ function viewDashboard() {
     </a>`).join("")}</div>` : `<div class="recent-empty">Your saved lectures will appear here after you process one.</div>`;
 
   $("#view").innerHTML = `
-    <div class="page-head">
-      <div><div class="eyebrow">CAMPUS STUDY DESK</div><h1>Your study dashboard</h1><p>Manage lecture recordings and review your course material.</p></div>
-      <div class="today-label">${ico("calendar-days")} ${esc(today)}</div>
-    </div>
-    <section class="welcome-hero">
-      <div class="hero-copy">
-        <div class="hero-tag">LECTURE WORKSPACE</div>
-        <h1>Turn lectures into study material.</h1>
-        <p>Upload an audio or video recording to create searchable notes, ask questions grounded in the lecture, and generate practice quizzes.</p>
-        <div class="hero-actions">
-          <button type="button" class="btn btn-white" id="choose-file">${ico("upload")} Add a lecture</button>
-          <a href="#/lectures" class="btn btn-translucent">Explore library ${ico("arrow-up-right")}</a>
+    <section class="study-home">
+      <div class="home-welcome">
+        <h1>What would you like to study?</h1>
+        <p>Add a lecture to chat with it, make notes, or practise.</p>
+      </div>
+      <section class="study-upload-area" aria-label="Add study material">
+        <div class="study-composer">
+          <div class="study-composer-label">Start with a lecture</div>
+          <input type="file" id="file" accept="video/*,audio/*" hidden>
+          <div class="study-composer-actions">
+            <button type="button" class="btn study-upload-button" id="choose-file">${ico("plus")} <span>Upload audio or video</span></button>
+            <button type="button" id="youtube-toggle" class="study-link-button" hidden>Use YouTube</button>
+          </div>
+          <div class="study-upload-note" id="hint">Audio and video files supported.</div>
         </div>
-        <input type="file" id="file" accept="video/*,audio/*" hidden>
-      </div>
-      
-    </section>
-    <section id="picked-card" class="info-card picked-upload" hidden>
-      <div class="picked-file-icon">${ico("file-text")}</div><div class="picked-file-copy"><strong id="fname">Selected lecture</strong><small id="file-detail">Ready to process</small></div>
-      <button type="button" id="up" class="btn btn-sm">Process lecture ${ico("arrow-right")}</button><button type="button" id="cancel-file" class="ghost">Cancel</button>
-    </section>
-    <div id="ytrow" class="youtube-row" hidden><input id="yt" type="url" placeholder="Paste a YouTube lecture URL" aria-label="YouTube lecture URL"><button type="button" class="btn btn-sm" id="ytb">Process link ${ico("arrow-right")}</button></div>
-    <div class="upload-options"><span id="hint">Audio files (MP3, M4A) are smaller and work best.</span><button type="button" id="youtube-toggle" class="text-link" hidden>Use a YouTube link ${ico("arrow-up-right")}</button></div>
-    <section id="reference-card" class="reference-upload-card" hidden>
-      <div class="reference-upload-copy"><div class="reference-upload-heading">${ico("book-open")} <strong>Have notes or documents from your lecturer?</strong> <span>Optional, but recommended</span></div><p>Add lecture slides, handouts, or class notes so answers, summaries, and detailed notes can use both the recording and the lecturer's material.</p><small id="reference-files-detail">PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files</small></div>
-      <input type="file" id="reference-files" accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown" multiple hidden>
-      <button type="button" class="btn btn-sm" id="choose-reference-files">${ico("upload")} Add lecturer files</button>
-    </section>
-    <section id="prog" class="processing-card" hidden><div class="processing-heading"><span class="processing-spinner"></span><div><strong>Preparing your study workspace</strong><p id="stage">Uploading...</p></div></div><div class="bar"><i id="barfill"></i></div></section>
-
-    <section class="metrics-grid" aria-label="Study library statistics">
-      <article class="metric-card"><div class="metric-icon primary">${ico("library")}</div><div class="metric-copy"><div class="metric-label">Saved lectures</div><div class="metric-value">${lectures.length}</div><div class="metric-foot">${lectures.length ? "Ready when you are" : "Your library starts here"}</div></div></article>
-      <article class="metric-card"><div class="metric-icon mint">${ico("layers")}</div><div class="metric-copy"><div class="metric-label">Knowledge chunks</div><div class="metric-value">${totalChunks.toLocaleString()}</div><div class="metric-foot">Searchable lecture passages</div></div></article>
-      <article class="metric-card"><div class="metric-icon peach">${ico("brain")}</div><div class="metric-copy"><div class="metric-label">Study tools</div><div class="metric-value">5</div><div class="metric-foot">Chat, summary, detailed notes, quiz and evaluation</div></div></article>
-    </section>
-
-    <section class="section-block">
-      <div class="section-head"><div class="section-title-wrap"><h2>Continue learning</h2><p>Jump back into a lecture and keep your momentum.</p></div>${lectures.length ? `<a href="#/lectures" class="text-link">All lectures ${ico("arrow-right")}</a>` : ""}</div>
-      ${continueBlock}
-    </section>
-
-    <section class="section-block">
-      <div class="section-head"><div class="section-title-wrap"><h2>Your learning toolkit</h2><p>Choose the next step that works for you.</p></div></div>
-      <div class="tool-grid">
-        <button class="tool-card" type="button" data-tool-tab="Chat"><span class="tool-icon chat">${ico("message-circle")}</span><span class="tool-title">Ask your lecture</span><span class="tool-desc">Get answers grounded in your study material.</span><span class="tool-arrow">${ico("arrow-up-right")}</span></button>
-        <button class="tool-card" type="button" data-tool-tab="Summary"><span class="tool-icon notes">${ico("file-text")}</span><span class="tool-title">Smart summaries</span><span class="tool-desc">Review the main ideas in less time.</span><span class="tool-arrow">${ico("arrow-up-right")}</span></button>
-        <button class="tool-card" type="button" data-tool-tab="Quiz"><span class="tool-icon quiz">${ico("clipboard-check")}</span><span class="tool-title">Practice quiz</span><span class="tool-desc">Check understanding with generated questions.</span><span class="tool-arrow">${ico("arrow-up-right")}</span></button>
-        <button class="tool-card" type="button" data-tool-tab="Evaluation"><span class="tool-icon eval">${ico("compass")}</span><span class="tool-title">Evaluate answers</span><span class="tool-desc">Test answers against expected responses.</span><span class="tool-arrow">${ico("arrow-up-right")}</span></button>
-      </div>
-    </section>
-
-    <section class="section-block">
-      <div class="section-head"><div class="section-title-wrap"><h2>Recently added</h2><p>Your latest learning materials, all in one place.</p></div><a href="#/lectures" class="text-link">Open library ${ico("arrow-right")}</a></div>
-      ${recentBlock}
-    </section>`;
+        <div id="ytrow" class="youtube-row" hidden><input id="yt" type="url" placeholder="Paste a YouTube URL" aria-label="YouTube lecture URL"><button type="button" class="btn btn-sm" id="ytb">Add link ${ico("arrow-up-right")}</button></div>
+        <section id="picked-card" class="picked-upload" hidden>
+          <div class="picked-file-icon">${ico("file-text")}</div><div class="picked-file-copy"><strong id="fname">Selected lecture</strong><small id="file-detail">Ready to process</small></div>
+          <button type="button" id="up" class="btn btn-sm">Process ${ico("arrow-right")}</button><button type="button" id="cancel-file" class="ghost">Cancel</button>
+        </section>
+        <section id="reference-card" class="reference-upload-card" hidden>
+          <div class="reference-upload-copy"><div class="reference-upload-heading"><strong>Add lecturer notes</strong> <span>Optional</span></div><p>Attach slides or handouts to ground answers in class material.</p><small id="reference-files-detail">PDF, DOCX, PPTX, TXT or Markdown</small></div>
+          <input type="file" id="reference-files" accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown" multiple hidden>
+          <button type="button" class="btn btn-sm" id="choose-reference-files">Add files</button>
+        </section>
+        <section id="prog" class="processing-card" hidden><div class="processing-heading"><span class="processing-spinner"></span><div><strong>Preparing your study space</strong><p id="stage">Uploading...</p></div></div><div class="bar"><i id="barfill"></i></div></section>
+      </section>
+      <section class="recent-study-section">
+        <div class="recent-study-heading"><h2>Recent lectures</h2><a href="#/lectures" class="text-link">View all ${ico("arrow-right")}</a></div>
+        ${recent.length ? `<div class="recent-list">${recent.map((l) => `
+          <a class="recent-row" href="#/workspace/${encodeURIComponent(l.id)}"><span class="recent-mini-icon">${ico("file-text")}</span><span class="recent-row-copy"><strong>${esc(l.title)}</strong><small>Added ${esc(fmt(l.created_at) || "recently")}</small></span><span class="recent-open">${ico("arrow-up-right")}</span></a>`).join("")}</div>` : `<p class="recent-study-empty">Your lectures will appear here.</p>`}
+      </section>
+    </section>`
 
   const fileInput = $("#file");
   const referenceInput = $("#reference-files");
@@ -592,8 +900,7 @@ function viewDashboard() {
     const yt = h.youtube_enabled !== false;
     $("#youtube-toggle").hidden = !yt;
     $("#reference-files-detail").textContent = `PDF, DOCX, PPTX, TXT or Markdown · Up to ${maxReferenceFiles} files, ${maxReferenceMB} MB each`;
-    $("#hint").textContent = `Combined upload up to ${maxMB} MB. Audio files (MP3, M4A) are smaller and work best.` +
-      (yt ? " You can also add a YouTube lecture link." : " YouTube links are disabled on this server; upload the audio or video file instead.");
+    $("#hint").textContent = yt ? "Audio, video, or YouTube link." : "Audio and video files supported.";
   }).catch(() => {});
   $("#youtube-toggle").onclick = () => {
     $("#ytrow").hidden = !$("#ytrow").hidden;
@@ -610,7 +917,7 @@ function viewDashboard() {
     if (references.some((item) => item.size > maxReferenceMB * 1048576)) return toast(`Each lecturer file must be ${maxReferenceMB} MB or smaller.`);
     if (f.size + references.reduce((total, item) => total + item.size, 0) > maxMB * 1048576) return toast(`The lecture and lecturer files together must stay under ${maxMB} MB.`);
     addReferencesToForm(fd);
-    track(fetch(API + "/api/lectures/upload", { method: "POST", body: fd }));
+    track(fetch(API + "/api/lectures/upload", { method: "POST", body: fd, credentials: "include", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} }));
   };
   $("#ytb").onclick = () => {
     const url = $("#yt").value.trim();
@@ -621,7 +928,7 @@ function viewDashboard() {
     const fd = new FormData();
     fd.append("url", url);
     addReferencesToForm(fd);
-    track(fetch(API + "/api/lectures/youtube", { method: "POST", body: fd }));
+    track(fetch(API + "/api/lectures/youtube", { method: "POST", body: fd, credentials: "include", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} }));
   };
   document.querySelectorAll("[data-tool-tab]").forEach((button) => {
     button.onclick = () => {
@@ -715,7 +1022,7 @@ function viewLibrary() {
 function viewWorkspace() {
   const lec = lectures.find((l) => l.id === current);
   if (!lec) {
-    $("#view").innerHTML = `<div class="workspace-empty"><div class="workspace-empty-icon">${ico("brain")}</div><div class="eyebrow">YOUR LEARNING SPACE</div><h1>Study workspace</h1><p>Open a lecture from your library to chat with your materials, create focused notes, or practise what you've learned.</p><a class="btn" href="#/lectures">Browse my lectures ${ico("arrow-right")}</a></div>`;
+    $("#view").innerHTML = `<div class="workspace-empty"><h1>Choose a lecture</h1><p>Open a lecture to start chatting.</p><a class="btn" href="#/lectures">Browse lectures ${ico("arrow-right")}</a></div>`;
     return;
   }
   const tabs = { Chat: tabChat, Summary: tabSummary, "Detailed Notes": tabDetailedNotes, Quiz: tabQuiz, Evaluation: tabEval };
@@ -725,7 +1032,7 @@ function viewWorkspace() {
       <div class="workspace-title-group">
         <div class="eyebrow">YOUR LEARNING SPACE</div>
         <h1>${esc(lec.title)}</h1>
-        <p>Ask questions, turn concepts into clear notes, and check your understanding.</p>
+        <p>Ask questions about this lecture.</p>
       </div>
       <a class="workspace-back" href="#/lectures">${ico("library")} <span>All lectures</span></a>
     </div>
@@ -856,7 +1163,8 @@ async function streamAnswer(lectureId, answer) {
   try {
     const response = await fetch(`${API}/api/lectures/${lectureId}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson", ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}) },
       body: JSON.stringify({ question: answer.question, session_id: sid }),
       signal: controller.signal
     });
@@ -905,20 +1213,18 @@ function tabChat(el) {
   el.innerHTML = `
     <section class="chat-workspace">
       <header class="chat-workspace-header">
-        <div class="chat-header-symbol">${ico("message-circle")}</div>
-        <div class="chat-header-copy"><h2>Ask your lecture</h2><p>Get clear answers backed by the material you uploaded.</p></div>
-        <div class="chat-grounding-badge"><span></span> Based on this lecture</div>
+        <div class="chat-header-copy"><h2>${esc(lec.title)}</h2><p>Ask a question about this lecture.</p></div>
       </header>
       <div id="log" class="log polished-chat-log" role="log" aria-live="off" aria-label="Conversation"></div>
       <div id="chatStatus" class="sr-only" role="status" aria-live="polite"></div>
       <form id="ask" class="ask polished-composer">
         <div class="composer-box">
           <textarea id="q" rows="1" placeholder="Ask anything about this lecture…" autocomplete="off" maxlength="2000" aria-label="Your question"></textarea>
-          <div class="composer-footer"><span>${ico("book-open")} Answers are based on <b>${esc(lec?.title || "your lecture")}</b></span><div class="composer-actions"><button type="button" class="ghost stop-message" id="stopAnswer" hidden>Stop</button><button class="btn send-message" id="sendQuestion" type="submit">Send question ${ico("arrow-up-right")}</button></div></div>
+          <div class="composer-footer"><span>Lecture grounded</span><div class="composer-actions"><button type="button" class="ghost stop-message" id="stopAnswer" hidden>Stop</button><button class="btn send-message" id="sendQuestion" type="submit" aria-label="Send message">${ico("arrow-up-right")}</button></div></div>
         </div>
         <button type="button" id="reset" class="new-chat-button">${ico("plus")} <span>New chat</span></button>
       </form>
-      <p class="chat-disclaimer">AI can make mistakes. Check the linked lecture passages when accuracy matters.</p>
+      <p class="chat-disclaimer">Check important answers against your lecture.</p>
     </section>`;
 
   const box = el.querySelector("#log");
@@ -934,14 +1240,11 @@ function tabChat(el) {
 
   const emptyState = () => `
     <div class="chat-empty-state">
-      <div class="chat-empty-art"><span>${ico("sparkles")}</span><i></i><b></b></div>
-      <div class="chat-empty-eyebrow">START A CONVERSATION</div>
-      <h3>What would you like to understand?</h3>
-      <p>Choose a prompt to get started, or write your own question below.</p>
+      <h3>Ask anything about this lecture</h3>
       <div class="prompt-suggestions">
-        <button type="button" data-prompt="Explain the key concepts in this lecture in simple terms."><span class="suggestion-icon">${ico("lightbulb")}</span><span class="suggestion-copy"><strong>Explain a concept</strong><small>Simple language, step by step</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
-        <button type="button" data-prompt="Give me a practical example from this lecture."><span class="suggestion-icon">${ico("compass")}</span><span class="suggestion-copy"><strong>Show an example</strong><small>Connect theory to practice</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
-        <button type="button" data-prompt="What are the most important points I should remember from this lecture?"><span class="suggestion-icon">${ico("book-mark")}</span><span class="suggestion-copy"><strong>Revise key points</strong><small>Focus on what matters most</small></span>${ico("arrow-up-right", "suggestion-arrow")}</button>
+        <button type="button" data-prompt="Explain the main idea in simple terms.">Explain a concept</button>
+        <button type="button" data-prompt="Give me a practical example from this lecture.">Show an example</button>
+        <button type="button" data-prompt="Summarize the key points I should remember.">Summarize key points</button>
       </div>
     </div>`;
 
@@ -1291,5 +1594,4 @@ function tabEval(el, alive = () => true) {
     } finally { run.disabled = false; }
   };
 }
-
-route();
+bootstrapAuth();

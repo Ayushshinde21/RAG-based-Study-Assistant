@@ -1,48 +1,79 @@
 
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
+!.env.*.example
 cookies.txt
 cookies*.txt
+.streamlit/secrets.toml
 
+# Python virtual environments
 .venv/
 venv/
 env/
 
+# Python cache files
 __pycache__/
 *.py[cod]
+*$py.class
+
+# IDE settings
+.idea/
+.vscode/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Testing and coverage
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+test-results/
+playwright-report/
 
+# Local databases and database journals
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# Vector databases and generated indexes
 chroma_db/
+chroma/
 vector_store/
+index_store/
+
+# Generated lecture data
 transcripts/
 audio_files/
 uploads/
 storage/
-lecture_titles.json
+processed_audio/
+processed_videos/
 
-*.db
-*.sqlite
-*.sqlite3
+# Generated models and large data files
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.joblib
 
+# Frontend dependencies and build output
 node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/build/
 
+# Browser and OS files
 .playwright/
-playwright-report/
-test-results/
-test-results.xml
-
-*.log
-*.tmp
 .DS_Store
 Thumbs.db
-
-.idea
-.vscode/
+desktop.ini
