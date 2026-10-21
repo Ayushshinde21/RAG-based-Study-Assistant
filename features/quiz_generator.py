@@ -1,11 +1,11 @@
 import json
 
-from core.llm import get_gemini_llm, response_text
+from core.llm import get_groq_llm, response_text
 from langchain_core.documents import Document
 
 
 def get_llm(*, response_mime_type: str | None = None):
-    return get_gemini_llm(response_mime_type=response_mime_type)
+    return get_groq_llm(response_mime_type=response_mime_type)
 
 
 def generate_quiz(docs: list[Document], num_questions: int = 5, max_chunks: int = 15) -> list[dict]:
@@ -27,17 +27,21 @@ Return ONLY a valid JSON array, no explanation, no markdown, just the JSON.
 
 Format:
 [
-  {{
-    "question": "Question text here?",
-    "options": {{
-      "A": "Option A",
-      "B": "Option B", 
-      "C": "Option C",
-      "D": "Option D"
-    }},
-    "answer": "A",
-    "explanation": "Brief explanation of why this is correct"
-  }}
+  {
+  "questions": [
+    {
+      "question": "What is the main concept?",
+      "options": {
+        "A": "First option",
+        "B": "Second option",
+        "C": "Third option",
+        "D": "Fourth option"
+      },
+      "answer": "A",
+      "explanation": "Explanation based on the lecture."
+    }
+  ]
+}
 ]
 
 --- LECTURE CONTENT ---
@@ -54,11 +58,37 @@ Format:
     raw = raw.replace("```json", "").replace("```", "").strip()
 
     try:
-        questions = json.loads(raw)
-        print(f"✅ Quiz generated! {len(questions)} questions")
+        payload = json.loads(raw)
+        questions = payload.get("questions") if isinstance(payload, dict) else None
+
+        if not isinstance(questions, list):
+            raise ValueError("Response does not contain a questions array")
+
+        if len(questions) != num_questions:
+            raise ValueError(
+                f"Expected {num_questions} questions, received {len(questions)}"
+            )
+
+        required_keys = {"question", "options", "answer", "explanation"}
+
+        for question in questions:
+            if not isinstance(question, dict) or not required_keys.issubset(question):
+                raise ValueError("A quiz question is missing required fields")
+
+            if not isinstance(question["options"], dict):
+                raise ValueError("Question options must be a JSON object")
+
+            if set(question["options"]) != {"A", "B", "C", "D"}:
+                raise ValueError("Each question must have options A, B, C and D")
+
+            if question["answer"] not in {"A", "B", "C", "D"}:
+                raise ValueError("Question answer must be A, B, C or D")
+
+        print(f"Quiz generated! {len(questions)} questions")
         return questions
-    except json.JSONDecodeError as e:
-        print(f"⚠️ JSON parse error: {e}")
+
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"Quiz response validation failed: {exc}")
         print(f"Raw response: {raw[:200]}")
         return []
 

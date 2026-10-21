@@ -9,8 +9,8 @@ MEMORY_WINDOW = 10
 # ── LLM setup ─────────────────────────────────────────────────────────────────
 
 def get_llm():
-    from core.llm import get_gemini_llm
-    return get_gemini_llm()
+    from core.llm import get_groq_llm
+    return get_groq_llm()
 
 
 # ── Memory ────────────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ class RAGEngine:
         from core.llm import response_text
         answer = response_text(response)
         if not answer:
-            raise RuntimeError("Gemini returned an empty answer. Please try again.")
+            raise RuntimeError("Groq returned an empty answer. Please try again.")
 
         # Step 6 — Save to memory
         if use_memory:

@@ -1,9 +1,9 @@
-from core.llm import get_gemini_llm, response_text
+from core.llm import get_groq_llm, response_text
 from langchain_core.documents import Document
 
 
 def get_llm(*, response_mime_type: str | None = None):
-    return get_gemini_llm(response_mime_type=response_mime_type)
+    return get_groq_llm(response_mime_type=response_mime_type)
 
 
 def select_context_docs(docs: list[Document], max_chunks: int = 15) -> list[Document]:

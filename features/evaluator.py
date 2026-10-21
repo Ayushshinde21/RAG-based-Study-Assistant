@@ -31,9 +31,10 @@ def evaluate_rag(
     # to rate its own mistakes as fine). temperature=0.0 for consistent
     # scoring across runs.
     groq_llm = ChatGroq(
-        model="llama-3.1-8b-instant",
+        model=os.getenv("GROQ_EVALUATOR_MODEL", "openai/gpt-oss-120b"),
         api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.0,
+        max_retries=2,
     )
     embeddings = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
