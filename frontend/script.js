@@ -75,8 +75,16 @@ function splitTableRow(line) {
 const isTableSeparator = (line) => line.includes("|") && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line);
 const looksLikeTableRow = (line) => line.includes("|") && line.trim().length > 1;
 
+function normalizeChatWhitespace(source) {
+  return String(source ?? "")
+    // Some model responses contain encoded spaces. Normalize only whitespace
+    // entities before Markdown parsing so they do not appear as literal text.
+    .replace(/&amp;#(?:x0*20|0*32|0*160);|&amp;nbsp;/gi, " ")
+    .replace(/&#(?:x0*20|0*32|0*160);|&(?:nbsp|ensp|emsp|thinsp);/gi, " ");
+}
+
 function renderRichText(source, options = {}) {
-  const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const lines = normalizeChatWhitespace(source).replace(/\r\n?/g, "\n").split("\n");
   const output = [];
   let paragraph = [];
   let listItems = [];
@@ -153,13 +161,15 @@ function renderRichText(source, options = {}) {
       }
     }
 
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
-    if (heading) {
+    const heading = line.match(/^\s*(#{1,3})\s+(.+?)\s*$/);
+    const standaloneLabel = line.trim().match(/^\*\*([^*\n]{2,60})\*\*:?$|^__([^_\n]{2,60})__:?$/);
+    if (heading || (standaloneLabel && !options.headingPrefix)) {
       flushParagraph();
       flushList();
-      const level = heading[1].length;
+      const level = heading ? heading[1].length : 3;
+      const label = heading ? heading[2] : (standaloneLabel[1] || standaloneLabel[2]).replace(/:$/, "");
       const id = options.headingPrefix ? ` id="${options.headingPrefix}-section-${++sectionNumber}"` : "";
-      output.push(`<h${level} class="rich-heading"${id}>${renderInline(heading[2])}</h${level}>`);
+      output.push(`<h${level} class="rich-heading"${id}>${renderInline(label)}</h${level}>`);
       continue;
     }
 

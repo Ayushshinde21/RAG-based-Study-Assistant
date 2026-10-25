@@ -74,3 +74,36 @@ def response_text(message: Any) -> str:
         return text_value.strip()
 
     return ""
+
+
+def stream_chunk_text(message: Any) -> str:
+    """Extract text from one streaming chunk without trimming its whitespace.
+
+    Leading spaces are meaningful in streamed language-model output: stripping
+    each chunk separately joins words that arrived in adjacent chunks.
+    """
+    if isinstance(message, str):
+        return message
+
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") in {"text", "output_text"}:
+                    value = part.get("text")
+                    if isinstance(value, str):
+                        text_parts.append(value)
+            else:
+                value = getattr(part, "text", None)
+                if isinstance(value, str):
+                    text_parts.append(value)
+        return "".join(text_parts)
+
+    text_value = getattr(message, "text", None)
+    return text_value if isinstance(text_value, str) else ""
