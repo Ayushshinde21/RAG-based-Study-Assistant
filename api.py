@@ -276,27 +276,60 @@ def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, referenc
         with PROCESS_LOCK:
             job["status"] = "running"
 
+            video_title = None
+            transcript_path = None
             set_step(job, 0)
-            from utils.audio_processor import get_audio_path
-            audio_path = get_audio_path(source)
-            if not audio_path or not os.path.exists(audio_path):
-                raise RuntimeError("No audio could be extracted from this source.")
-            size = os.path.getsize(audio_path)
-            print(f"[job {job_id}] audio file: {audio_path} ({size / 1024:.0f} KB)")
-            if size < 2048:
-                raise RuntimeError(
-                    f"The audio file is nearly empty ({size} bytes). YouTube probably "
-                    "cut the download. Try again, try another video, or upload the file."
-                )
 
-            set_step(job, 1)
-            from utils.transcriber import transcribe_with_timestamps, save_transcript
-            segments = transcribe_with_timestamps(audio_path)
-            if not segments:
-                raise RuntimeError("The transcription came back empty. The recording may be silent.")
-            transcript_path = save_transcript(segments, audio_path)
-            del segments
-            gc.collect()
+            # Captions are far cheaper than speech recognition for multi-hour YouTube videos.
+            # If English captions are unavailable, continue with the normal audio pipeline.
+            if is_url:
+                job["stage"] = "Checking for YouTube captions"
+                try:
+                    from utils.audio_processor import download_youtube_captions
+                    caption_result = download_youtube_captions(source)
+                except Exception as e:
+                    print(f"[job {job_id}] caption-first processing skipped: {friendly_error(e)}")
+                    caption_result = None
+
+                if caption_result:
+                    from utils.transcriber import save_transcript
+                    segments, video_title = caption_result
+                    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", video_title).strip("._")[:150] or "YouTube_lecture"
+                    transcript_path = save_transcript(segments, os.path.join("audio_files", safe_title + ".mp3"))
+                    del segments
+                    gc.collect()
+                    job["step"] = 2
+                    job["stage"] = "YouTube captions ready"
+
+            if transcript_path is None:
+                if is_url and not YOUTUBE_ENABLED:
+                    raise RuntimeError(
+                        "No usable English YouTube captions were available. This server has YouTube audio downloading disabled. "
+                        "Try a video with English captions or run the project locally with YOUTUBE_ENABLED=1."
+                    )
+                set_step(job, 0)
+                from utils.audio_processor import get_audio_path
+                audio_path = get_audio_path(source)
+                if not audio_path or not os.path.exists(audio_path):
+                    raise RuntimeError("No audio could be extracted from this source.")
+                size = os.path.getsize(audio_path)
+                print(f"[job {job_id}] audio file: {audio_path} ({size / 1024:.0f} KB)")
+                if size < 2048:
+                    raise RuntimeError(
+                        f"The audio file is nearly empty ({size} bytes). YouTube probably "
+                        "cut the download. Try again, try another video, or upload the file."
+                    )
+
+                set_step(job, 1)
+                from utils.transcriber import transcribe_with_timestamps, save_transcript
+                def transcription_progress(message: str):
+                    job["stage"] = message
+                segments = transcribe_with_timestamps(audio_path, progress_callback=transcription_progress)
+                if not segments:
+                    raise RuntimeError("The transcription came back empty. The recording may be silent.")
+                transcript_path = save_transcript(segments, audio_path)
+                del segments
+                gc.collect()
 
             set_step(job, 2)
             from core.chunker import chunk_from_file
@@ -347,7 +380,7 @@ def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, referenc
             import core.reranker  # noqa: F401  (import loads the model)
 
             set_step(job, 5)
-            title = os.path.splitext(os.path.basename(audio_path))[0]
+            title = video_title or os.path.splitext(os.path.basename(audio_path))[0]
             lecture_id = register_lecture(title=title, collection_name=collection,
                                           num_chunks=len(docs), transcript_path=transcript_path,
                                           owner_user_id=owner_user_id)
@@ -500,6 +533,7 @@ def health():
         "status": "ok",
         "max_upload_mb": MAX_UPLOAD_MB,
         "youtube_enabled": YOUTUBE_ENABLED,
+        "youtube_captions_enabled": True,
         "max_reference_file_mb": MAX_REFERENCE_FILE_MB,
         "max_reference_files": MAX_REFERENCE_FILES,
         "reference_extensions": sorted(REFERENCE_EXTENSIONS),
@@ -654,8 +688,6 @@ async def from_youtube(request: Request, user: dict = Depends(STUDENT_OR_ADMIN))
         url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
         reference_uploads = []
 
-    if not YOUTUBE_ENABLED:
-        raise HTTPException(400, "YouTube links are turned off on this server. Upload the audio file instead.")
     if not valid_youtube_url(url):
         raise HTTPException(400, "Please provide a link to a single YouTube video.")
     notes = _save_reference_uploads(reference_uploads)
@@ -716,6 +748,9 @@ def remove(lecture_id: str, user: dict = Depends(STUDENT_OR_ADMIN)):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     session_id: str = Field(default="default", max_length=64)
+    response_language: Literal["auto", "English", "Hindi", "Hinglish"] = "auto"
+    response_style: Literal["balanced", "simple", "exam", "step_by_step"] = "balanced"
+    response_length: Literal["concise", "standard", "detailed"] = "standard"
 
 
 def source_payload(docs) -> list[dict]:
@@ -728,7 +763,14 @@ def chat(lecture_id: str, req: ChatRequest, user: dict = Depends(STUDENT_OR_ADMI
     require_lecture_access(lecture_id, user)
     engine = get_engine(lecture_id, req.session_id)
     try:
-        stream, sources, save = engine.prepare_stream(req.question.strip())
+        stream, sources, save = engine.prepare_stream(
+            req.question.strip(),
+            preferences={
+                "response_language": req.response_language,
+                "response_style": req.response_style,
+                "response_length": req.response_length,
+            },
+        )
     except Exception as e:
         raise HTTPException(500, friendly_error(e))
 

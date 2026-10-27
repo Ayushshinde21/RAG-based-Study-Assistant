@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f6f6">
   <meta name="description" content="Organize lecture recordings, prepare study notes, ask questions about course material, and practise with quizzes.">
-  <script>try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
+  <script>try{const p=JSON.parse(localStorage.getItem("studyPreferences")||"{}");const m=p.themeMode||localStorage.getItem("theme")||"system";if(m==="dark"||(m==="system"&&window.matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.classList.add("dark")}catch(e){}</script>
   <title>Campus Study Desk | Student Dashboard</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
@@ -26,6 +26,7 @@
         <a href="#/workspace" data-r="workspace"><span class="nav-icon" data-icon="brain"></span><span>Study Workspace</span></a>
         <a href="#/farms" data-r="farms" hidden><span class="nav-icon" data-icon="sprout"></span><span>Farm data</span></a>
         <a href="#/admin" data-r="admin" hidden><span class="nav-icon" data-icon="shield-check"></span><span>Administration</span></a>
+        <a href="#/settings" data-r="settings"><span class="nav-icon" data-icon="settings"></span><span>Settings</span></a>
       </nav>
       <div class="side-bottom">
         <div class="side-note"><span class="online-dot"></span><span>Designed for lecture-based study</span></div>

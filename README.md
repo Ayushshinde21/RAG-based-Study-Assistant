@@ -7,9 +7,18 @@ app_port: 8080
 pinned: false
 ---
 
+
 # Campus Study Desk
 
 Campus Study Desk is a lecture-based study assistant. It can transcribe supported recordings, index lecture passages, answer questions using retrieved material, prepare summaries and detailed notes, generate quizzes, and evaluate answers. Outputs can be incomplete or wrong, so check them against the original lecture and the source passages shown by the app.
+
+### Processing videos longer than three hours
+
+For YouTube links, the API now tries available English captions before downloading audio. When `YOUTUBE_ENABLED=0` (the hosted default), caption-only processing is still attempted; if no usable English captions are available, the job returns a clear error rather than attempting an audio download. When audio download is enabled, unavailable captions fall back to transcription. Long English recordings are transcribed in five-minute windows so the application does not decode the entire recording into RAM at once. The progress stage updates while audio is split and transcribed.
+
+Set `WHISPER_CHUNK_SECONDS` to a value from 60 to 900 to change the audio window size (default: `300`). Smaller windows reduce peak memory further; larger windows may reduce splitting overhead. CPU transcription without captions can still take a long time. For deployed services, configure a suitable request timeout or move heavy processing to a background worker.
+
+**Deployment note:** Cloud Run request timeouts are limited to 60 minutes, so a long CPU transcription without captions can still outlast a single request. For those cases, use a durable background worker/job queue. The Docker deployment also limits uploads to 30 MB because Cloud Run HTTP/1 request bodies are limited to 32 MiB; use caption-supported YouTube links or run large local-file processing locally.
 
 ## Application interfaces
 

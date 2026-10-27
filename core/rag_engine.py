@@ -25,7 +25,7 @@ def get_memory():
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
 def build_prompt(query: str, context_docs: list[Document],
-                 chat_history: str) -> str:
+                 chat_history: str, preferences: dict | None = None) -> str:
     def _label(doc, i):
         ts = doc.metadata.get("start_time_str")
         return f"[Chunk {i+1} — around {ts}]" if ts else f"[Chunk {i+1}]"
@@ -33,6 +33,35 @@ def build_prompt(query: str, context_docs: list[Document],
     context = "\n\n".join([
         f"{_label(doc, i)}:\n{doc.page_content}"
         for i, doc in enumerate(context_docs)
+    ])
+
+    preferences = preferences or {}
+    language = preferences.get("response_language", "auto")
+    style = preferences.get("response_style", "balanced")
+    length = preferences.get("response_length", "standard")
+    language_rules = {
+        "auto": "Use the same language as the student's question (English, Hindi, or Hinglish).",
+        "English": "Answer in English. Retain standard technical terms when appropriate.",
+        "Hindi": "Answer in Hindi. Keep technical terms in English when that is clearer for learning.",
+        "Hinglish": "Answer in natural Hinglish using Latin script, while keeping important technical terms in English.",
+    }
+    style_rules = {
+        "balanced": "Use a clear, balanced tutoring style suited to the question.",
+        "simple": "Assume the learner is a beginner. Use plain wording and explain technical terms before relying on them.",
+        "exam": "Prefer exam-ready phrasing: a direct definition or answer, organized points, important keywords, and a brief conclusion when suitable.",
+        "step_by_step": "Explain a process or solution in ordered steps and make each transition easy to follow.",
+    }
+    length_rules = {
+        "concise": "Keep the answer concise and include only the details needed to answer the question accurately.",
+        "standard": "Use a moderate level of detail with short sections where useful.",
+        "detailed": "Give a fuller explanation of relevant steps, reasoning, and examples when the lecture supports them.",
+    }
+    preference_block = "\n".join([
+        "STUDENT RESPONSE PREFERENCES",
+        "- Language: " + language_rules.get(language, language_rules["auto"]),
+        "- Style: " + style_rules.get(style, style_rules["balanced"]),
+        "- Length: " + length_rules.get(length, length_rules["standard"]),
+        "These preferences never override the lecture-grounding and accuracy rules.",
     ])
 
     return f"""You are Campus Study Desk, a precise and patient AI study tutor.
@@ -56,6 +85,8 @@ ANSWER STRUCTURE AND READABILITY
 - For code questions, use fenced code blocks with a language tag. Explain the key logic separately; include output or a dry run only when requested or when it is directly inferable from the shown code and lecture.
 - For exam-style questions, make the answer easy to study: a clear definition or direct point, numbered explanation points, and a brief conclusion when appropriate. Respect any mark/length constraint in the student's question.
 - Use bold sparingly to highlight important terms, not whole paragraphs. Avoid a single dense wall of text, repeated conclusions, filler introductions, or claims like "as an AI".
+
+{preference_block}
 
 --- LECTURE EXCERPTS ---
 {context or "No lecture excerpts were retrieved."}
@@ -174,7 +205,7 @@ class RAGEngine:
         answer, _ = self.answer_with_sources(query)
         return answer
 
-    def prepare_stream(self, query: str, use_memory: bool = True):
+    def prepare_stream(self, query: str, use_memory: bool = True, preferences: dict | None = None):
         """
         Does retrieval + reranking + prompt-building (same as
         answer_with_sources), but returns a generator for the answer instead
@@ -196,7 +227,7 @@ class RAGEngine:
                 role = "Student" if msg.type == "human" else "Assistant"
                 chat_history += f"{role}: {msg.content}\n"
 
-        prompt = build_prompt(query, reranked, chat_history)
+        prompt = build_prompt(query, reranked, chat_history, preferences)
 
         def token_generator():
             from core.llm import stream_chunk_text

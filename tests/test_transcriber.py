@@ -5,29 +5,20 @@ import types
 import unittest
 from unittest import mock
 
-
-def seg(text):
-    return types.SimpleNamespace(text=text)
+import numpy as np
 
 
 class FakeModel:
     """Stands in for faster_whisper.WhisperModel so no model is downloaded."""
 
-    def __init__(self, language, texts):
-        self.language = language
-        self.texts = texts
-        self.calls = []
-
-    def transcribe(self, path, **kwargs):
-        self.calls.append(kwargs)
-        info = types.SimpleNamespace(language=self.language)
-        return iter(seg(t) for t in self.texts), info
+    def transcribe(self, audio, **kwargs):
+        return iter([]), types.SimpleNamespace(language="en")
 
 
 class TestTranscribeRouting(unittest.TestCase):
     def setUp(self):
         fake_fw = types.ModuleType("faster_whisper")
-        fake_fw.WhisperModel = lambda *a, **k: FakeModel("en", [])
+        fake_fw.WhisperModel = lambda *a, **k: FakeModel()
         patcher = mock.patch.dict(sys.modules, {"faster_whisper": fake_fw})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -37,28 +28,43 @@ class TestTranscribeRouting(unittest.TestCase):
         self.addCleanup(lambda: sys.modules.pop("utils.transcriber", None))
         self.audio = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
         self.audio.close()
-        self.addCleanup(os.remove, self.audio.name)
+        self.addCleanup(lambda: os.path.exists(self.audio.name) and os.remove(self.audio.name))
 
-    def test_english_uses_single_whisper_call(self):
-        self.t.model = FakeModel("en", [" hello", " world "])
-        self.assertEqual(self.t.transcribe(self.audio.name), "hello  world")
-        self.assertEqual(len(self.t.model.calls), 1)
+    def test_plain_transcribe_joins_timestamped_text(self):
+        with mock.patch.object(self.t, "transcribe_with_timestamps", return_value=[
+            {"start": 0, "end": 1, "text": "hello"},
+            {"start": 1, "end": 2, "text": "world"},
+        ]):
+            self.assertEqual(self.t.transcribe(self.audio.name), "hello world")
 
-    def test_hindi_goes_to_sarvam_path(self):
-        self.t.model = FakeModel("hi", [])
-        with mock.patch.object(self.t, "transcribe_hindi", return_value="translated") as hi:
-            self.assertEqual(self.t.transcribe(self.audio.name), "translated")
-        hi.assert_called_once_with(self.audio.name)
+    def test_hindi_uses_sarvam_path(self):
+        with mock.patch.object(self.t, "_get_audio_duration", return_value=60), \
+             mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
+             mock.patch.object(self.t, "detect_language", return_value="hi"), \
+             mock.patch.object(self.t, "transcribe_hindi_segments", return_value=[{"start": 0, "end": 20, "text": "translated"}]) as hindi:
+            result = self.t.transcribe_with_timestamps(self.audio.name)
+        self.assertEqual(result[0]["text"], "translated")
+        hindi.assert_called_once_with(self.audio.name, progress_callback=None)
 
-    def test_other_language_falls_back_to_forced_english(self):
-        self.t.model = FakeModel("fr", [])
-        with mock.patch.object(self.t, "transcribe_english", return_value="fr->en") as en:
-            self.assertEqual(self.t.transcribe(self.audio.name), "fr->en")
-        en.assert_called_once_with(self.audio.name)
+    def test_other_language_uses_chunked_english_fallback(self):
+        expected = [{"start": 0, "end": 1, "text": "translated to English"}]
+        with mock.patch.object(self.t, "_get_audio_duration", return_value=720), \
+             mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
+             mock.patch.object(self.t, "detect_language", return_value="fr"), \
+             mock.patch.object(self.t, "_transcribe_english_in_chunks", return_value=expected) as english:
+            result = self.t.transcribe_with_timestamps(self.audio.name)
+        self.assertEqual(result, expected)
+        english.assert_called_once_with(self.audio.name, 720, None)
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
             self.t.transcribe("does_not_exist.mp3")
+
+    def test_silent_sample_raises(self):
+        with mock.patch.object(self.t, "_get_audio_duration", return_value=10), \
+             mock.patch.object(self.t, "load_audio_window", return_value=np.zeros(16000, dtype=np.float32)):
+            with self.assertRaisesRegex(RuntimeError, "sampled audio appears silent"):
+                self.t.transcribe_with_timestamps(self.audio.name)
 
 
 if __name__ == "__main__":

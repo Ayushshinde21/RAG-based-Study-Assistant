@@ -6,6 +6,46 @@ const store = {
   set(key, value) { try { localStorage.setItem(key, value); } catch {} },
   remove(key) { try { localStorage.removeItem(key); } catch {} }
 };
+const SETTINGS_DEFAULTS = {
+  themeMode: "system",
+  textSize: "standard",
+  reduceMotion: false,
+  responseLanguage: "auto",
+  responseStyle: "balanced",
+  responseLength: "standard",
+  showSources: true,
+  librarySort: "date",
+  quizQuestionCount: 5,
+};
+const SETTING_OPTIONS = {
+  themeMode: ["system", "light", "dark"],
+  textSize: ["small", "standard", "large"],
+  responseLanguage: ["auto", "English", "Hindi", "Hinglish"],
+  responseStyle: ["balanced", "simple", "exam", "step_by_step"],
+  responseLength: ["concise", "standard", "detailed"],
+  librarySort: ["date", "name", "chunks"],
+  quizQuestionCount: [3, 5, 8, 10],
+};
+function readSettings() {
+  let saved = {};
+  try {
+    const parsed = JSON.parse(store.get("studyPreferences") || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) saved = parsed;
+  } catch {}
+  const result = { ...SETTINGS_DEFAULTS, ...saved };
+  if (!SETTING_OPTIONS.themeMode.includes(saved.themeMode)) {
+    const oldTheme = store.get("theme");
+    result.themeMode = ["dark", "light"].includes(oldTheme) ? oldTheme : "system";
+  }
+  for (const key of Object.keys(SETTING_OPTIONS)) {
+    if (!SETTING_OPTIONS[key].includes(result[key])) result[key] = SETTINGS_DEFAULTS[key];
+  }
+  result.reduceMotion = result.reduceMotion === true;
+  result.showSources = result.showSources !== false;
+  return result;
+}
+let appSettings = readSettings();
+
 const ICONS = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   library: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 5.5v15A2.5 2.5 0 0 1 6.5 18H20M8 7h8M8 10h8"/>',
@@ -38,6 +78,9 @@ const ICONS = {
   'panel-right': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   'play-circle': '<circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/>',
   sprout: '<path d="M12 21v-9"/><path d="M12 12C5 12 3 8 3 4c6 0 9 3 9 8Z"/><path d="M12 16c0-6 3-10 9-10 0 5-2 10-9 10Z"/>',
+  'user-round': '<circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  settings: '<path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19.4 15 .1.1 1.2.9-1.4 2.4-1.4-.6a7.9 7.9 0 0 1-1.7 1l-.2 1.5h-2.8l-.2-1.5a7.9 7.9 0 0 1-1.7-1l-1.4.6-1.4-2.4 1.2-.9a7.2 7.2 0 0 1 0-2l-1.2-.9 1.4-2.4 1.4.6a7.9 7.9 0 0 1 1.7-1L13 7h2.8l.2 1.5a7.9 7.9 0 0 1 1.7 1l1.4-.6 1.4 2.4-1.2.9a7.2 7.2 0 0 1 .1 2.8Z"/>',
   'shield-check': '<path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/>',
 };
 const ico = (name, cls = "") => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.sparkles}</svg>`;
@@ -301,7 +344,7 @@ function toast(msg) {
   toast.t = setTimeout(() => t.classList.remove("show"), 3500);
 }
 
-// Theme
+// Theme and persistent display preferences
 const root = document.documentElement;
 const themeBtn = $("#theme");
 const themeBtnMobile = $("#themeMobile");
@@ -315,12 +358,29 @@ const syncTheme = () => {
   themeBtnMobile.setAttribute("aria-pressed", dark ? "true" : "false");
   themeBtnMobile.setAttribute("aria-label", "Switch to " + next.toLowerCase());
 };
-if (store.get("theme") === "dark") root.classList.add("dark");
-syncTheme();
-const toggleTheme = () => {
-  root.classList.toggle("dark");
-  store.set("theme", root.classList.contains("dark") ? "dark" : "light");
+function applySettingsToDocument() {
+  const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
+  const dark = appSettings.themeMode === "dark" || (appSettings.themeMode === "system" && prefersDark);
+  root.classList.toggle("dark", dark);
+  root.dataset.textSize = appSettings.textSize;
+  root.classList.toggle("reduce-motion", appSettings.reduceMotion);
+  store.set("theme", dark ? "dark" : "light");
   syncTheme();
+}
+function persistSettings() {
+  store.set("studyPreferences", JSON.stringify(appSettings));
+  applySettingsToDocument();
+}
+applySettingsToDocument();
+const systemThemeQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+systemThemeQuery?.addEventListener?.("change", () => {
+  if (appSettings.themeMode === "system") applySettingsToDocument();
+});
+const toggleTheme = () => {
+  appSettings.themeMode = root.classList.contains("dark") ? "light" : "dark";
+  persistSettings();
+  const selector = document.querySelector('[data-setting="themeMode"]');
+  if (selector) selector.value = appSettings.themeMode;
 };
 themeBtn.onclick = toggleTheme;
 themeBtnMobile.onclick = toggleTheme;
@@ -354,9 +414,10 @@ async function route() {
   const page = routeParts[0] || "dashboard";
   const id = routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   document.querySelector(".app")?.classList.toggle("workspace-mode", page === "workspace");
+  document.querySelector(".app")?.classList.toggle("settings-mode", page === "settings");
   const isLegalPage = page === "privacy" || page === "terms";
   document.querySelector(".app")?.classList.toggle("legal-mode", isLegalPage);
-  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace", privacy: "Privacy policy", terms: "Terms and conditions", farms: "Farm data", admin: "Administration" };
+  const labels = { dashboard: "Overview", lectures: "My Lectures", workspace: "Study Workspace", settings: "Settings", privacy: "Privacy policy", terms: "Terms and conditions", farms: "Farm data", admin: "Administration" };
   $("#top-page").textContent = labels[page] || "Overview";
   if (isLegalPage) {
     updateShell();
@@ -393,6 +454,10 @@ async function route() {
   }
   if (page === "admin") {
     await viewAdmin();
+    return;
+  }
+  if (page === "settings") {
+    viewSettings();
     return;
   }
   if (id) { current = id; store.set("lecture", id); }
@@ -439,6 +504,7 @@ function updateShell() {
     workspace: signedIn && currentUser.role !== "farmer",
     farms: signedIn && currentUser.role === "farmer",
     admin: signedIn && currentUser.role === "admin",
+    settings: signedIn && currentUser.role !== "farmer",
   };
   Object.entries(links).forEach(([name, visible]) => {
     const node = document.querySelector(`#nav [data-r="${name}"]`);
@@ -701,6 +767,95 @@ async function viewAdmin() {
 }
 
 
+function viewSettings() {
+  const selected = (key, value) => appSettings[key] === value ? "selected" : "";
+  const checked = (key) => appSettings[key] ? "checked" : "";
+  const role = String(currentUser?.role || "user");
+  const roleLabel = role.charAt(0).toUpperCase() + role.slice(1);
+  const email = currentUser?.email || "Not available";
+  const displayName = currentUser?.display_name || "Account";
+  $("#view").innerHTML = `
+    <section class="settings-page">
+      <header class="settings-page-head">
+        <div><p class="eyebrow">YOUR WORKSPACE</p><h1>Settings</h1><p>Personalize how Campus Study Desk looks and how your study assistant responds.</p></div>
+        <div class="settings-page-actions"><button type="button" class="ghost" id="export-settings">Export settings</button><button type="button" class="ghost" id="reset-settings">Reset defaults</button></div>
+      </header>
+      <p class="settings-save-status" id="settings-save-status" role="status">Preferences are saved automatically in this browser.</p>
+      <div class="settings-sections">
+        <section class="settings-card" aria-labelledby="settings-appearance-title">
+          <header class="settings-card-head"><span class="settings-icon">${ico("sun")}</span><div><h2 id="settings-appearance-title">Appearance & display</h2><p>Make the interface comfortable to use.</p></div></header>
+          <div class="settings-rows">
+            <div class="settings-row"><div class="settings-row-copy"><strong>Colour theme</strong><small>Choose the theme used across the application.</small></div><label class="settings-field"><span class="sr-only">Colour theme</span><select data-setting="themeMode"><option value="system" ${selected("themeMode", "system")}>Use device setting</option><option value="light" ${selected("themeMode", "light")}>Light</option><option value="dark" ${selected("themeMode", "dark")}>Dark</option></select></label></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Reading text size</strong><small>Adjust text in chat answers and generated notes.</small></div><label class="settings-field"><span class="sr-only">Reading text size</span><select data-setting="textSize"><option value="small" ${selected("textSize", "small")}>Small</option><option value="standard" ${selected("textSize", "standard")}>Standard</option><option value="large" ${selected("textSize", "large")}>Large</option></select></label></div>
+            <label class="settings-row settings-toggle-row"><span class="settings-row-copy"><strong>Reduce motion</strong><small>Reduce non-essential animations and transitions.</small></span><span class="settings-switch"><input type="checkbox" data-setting="reduceMotion" ${checked("reduceMotion")}><i aria-hidden="true"></i></span></label>
+          </div>
+        </section>
+        <section class="settings-card" aria-labelledby="settings-study-title">
+          <header class="settings-card-head"><span class="settings-icon">${ico("brain")}</span><div><h2 id="settings-study-title">Study preferences</h2><p>Set defaults for future study assistant answers.</p></div></header>
+          <div class="settings-rows">
+            <div class="settings-row"><div class="settings-row-copy"><strong>Answer language</strong><small>Auto follows the language of your question.</small></div><label class="settings-field"><span class="sr-only">Answer language</span><select data-setting="responseLanguage"><option value="auto" ${selected("responseLanguage", "auto")}>Follow my question</option><option value="English" ${selected("responseLanguage", "English")}>English</option><option value="Hindi" ${selected("responseLanguage", "Hindi")}>Hindi</option><option value="Hinglish" ${selected("responseLanguage", "Hinglish")}>Hinglish</option></select></label></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Explanation style</strong><small>Choose how an answer is explained.</small></div><label class="settings-field"><span class="sr-only">Explanation style</span><select data-setting="responseStyle"><option value="balanced" ${selected("responseStyle", "balanced")}>Balanced</option><option value="simple" ${selected("responseStyle", "simple")}>Beginner friendly</option><option value="exam" ${selected("responseStyle", "exam")}>Exam-oriented</option><option value="step_by_step" ${selected("responseStyle", "step_by_step")}>Step by step</option></select></label></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Answer length</strong><small>Control the default level of detail.</small></div><label class="settings-field"><span class="sr-only">Answer length</span><select data-setting="responseLength"><option value="concise" ${selected("responseLength", "concise")}>Concise</option><option value="standard" ${selected("responseLength", "standard")}>Standard</option><option value="detailed" ${selected("responseLength", "detailed")}>Detailed</option></select></label></div>
+            <label class="settings-row settings-toggle-row"><span class="settings-row-copy"><strong>Show lecture sources in chat</strong><small>Show supporting passages attached to assistant answers.</small></span><span class="settings-switch"><input type="checkbox" data-setting="showSources" ${checked("showSources")}><i aria-hidden="true"></i></span></label>
+          </div>
+        </section>
+        <section class="settings-card" aria-labelledby="settings-library-title">
+          <header class="settings-card-head"><span class="settings-icon">${ico("library")}</span><div><h2 id="settings-library-title">Lecture library & quizzes</h2><p>Choose the defaults used when you open your study tools.</p></div></header>
+          <div class="settings-rows">
+            <div class="settings-row"><div class="settings-row-copy"><strong>Default lecture sorting</strong><small>Applied when you open My Lectures.</small></div><label class="settings-field"><span class="sr-only">Default lecture sorting</span><select data-setting="librarySort"><option value="date" ${selected("librarySort", "date")}>Newest first</option><option value="name" ${selected("librarySort", "name")}>Name (A–Z)</option><option value="chunks" ${selected("librarySort", "chunks")}>Most chunks first</option></select></label></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Default quiz size</strong><small>Choose the initial question count in Quiz.</small></div><label class="settings-field"><span class="sr-only">Default quiz size</span><select data-setting="quizQuestionCount"><option value="3" ${selected("quizQuestionCount", 3)}>3 questions</option><option value="5" ${selected("quizQuestionCount", 5)}>5 questions</option><option value="8" ${selected("quizQuestionCount", 8)}>8 questions</option><option value="10" ${selected("quizQuestionCount", 10)}>10 questions</option></select></label></div>
+          </div>
+        </section>
+        <section class="settings-card" aria-labelledby="settings-account-title">
+          <header class="settings-card-head"><span class="settings-icon">${ico("shield-check")}</span><div><h2 id="settings-account-title">Account & privacy</h2><p>Review your signed-in account and important data information.</p></div></header>
+          <div class="settings-rows">
+            <div class="settings-row"><div class="settings-row-copy"><strong>Display name</strong><small>${esc(displayName)}</small></div><span class="settings-readonly">${ico("user-round")}</span></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Email address</strong><small>${esc(email)}</small></div><span class="settings-readonly">${ico("mail")}</span></div>
+            <div class="settings-row"><div class="settings-row-copy"><strong>Account role</strong><small>${esc(roleLabel)}</small></div><span class="settings-role">${esc(roleLabel)}</span></div>
+            <div class="settings-links"><a href="#/privacy">Privacy policy ${ico("arrow-up-right")}</a><a href="#/terms">Terms and conditions ${ico("arrow-up-right")}</a>${role === "admin" ? '<a href="#/admin">Administration ' + ico("arrow-up-right") + '</a>' : ""}</div>
+          </div>
+          <p class="settings-footnote">These preferences are stored in this browser. They do not change your account credentials or server configuration.</p>
+        </section>
+      </div>
+    </section>`;
+
+  const status = $("#settings-save-status");
+  const setStatus = (message = "Saved in this browser") => { if (status) status.textContent = message; };
+  document.querySelectorAll("[data-setting]").forEach((control) => {
+    control.addEventListener("change", () => {
+      const key = control.dataset.setting;
+      let value = control.type === "checkbox" ? control.checked : control.value;
+      if (key === "quizQuestionCount") value = Number(value);
+      if (Object.prototype.hasOwnProperty.call(SETTING_OPTIONS, key) && !SETTING_OPTIONS[key].includes(value)) return;
+      if (["reduceMotion", "showSources"].includes(key) && typeof value !== "boolean") return;
+      if (!Object.prototype.hasOwnProperty.call(SETTINGS_DEFAULTS, key)) return;
+      appSettings[key] = value;
+      persistSettings();
+      setStatus("Saved in this browser");
+    });
+  });
+  $("#export-settings").onclick = () => {
+    const payload = { application: "Campus Study Desk", exported_at: new Date().toISOString(), preferences: appSettings };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "campus-study-desk-settings.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("Settings export created");
+  };
+  $("#reset-settings").onclick = () => {
+    if (!confirm("Reset all preferences to their default values?")) return;
+    appSettings = { ...SETTINGS_DEFAULTS };
+    persistSettings();
+    viewSettings();
+    toast("Settings reset to defaults");
+  };
+}
+
 function viewLegalPage(page) {
   const isPrivacy = page === "privacy";
   const title = isPrivacy ? "Privacy policy" : "Terms and conditions";
@@ -907,10 +1062,12 @@ function viewDashboard() {
     maxMB = h.max_upload_mb || maxMB;
     maxReferenceMB = h.max_reference_file_mb || maxReferenceMB;
     maxReferenceFiles = h.max_reference_files || maxReferenceFiles;
-    const yt = h.youtube_enabled !== false;
+    const yt = h.youtube_enabled !== false || h.youtube_captions_enabled === true;
     $("#youtube-toggle").hidden = !yt;
     $("#reference-files-detail").textContent = `PDF, DOCX, PPTX, TXT or Markdown · Up to ${maxReferenceFiles} files, ${maxReferenceMB} MB each`;
-    $("#hint").textContent = yt ? "Audio, video, or YouTube link." : "Audio and video files supported.";
+    $("#hint").textContent = h.youtube_enabled === false && h.youtube_captions_enabled === true
+      ? "Audio/video uploads or YouTube links with English captions."
+      : yt ? "Audio, video, or YouTube link." : "Audio and video files supported.";
   }).catch(() => {});
   $("#youtube-toggle").onclick = () => {
     $("#ytrow").hidden = !$("#ytrow").hidden;
@@ -1002,7 +1159,7 @@ async function track(request) {
 
 // Library
 function viewLibrary() {
-  $("#view").innerHTML = `<h1>My lectures</h1><div class="lecture-library-controls"><input id="q" class="search" placeholder="Search by title" aria-label="Search lectures"><label class="sort-control" for="sortLectures"><span>Sort by</span><select id="sortLectures" aria-label="Sort lectures"><option value="date">Date added (newest first)</option><option value="name">Name (A–Z)</option><option value="chunks">Chunks (most first)</option></select></label></div><div id="list"></div>`;
+  $("#view").innerHTML = `<h1>My lectures</h1><div class="lecture-library-controls"><input id="q" class="search" placeholder="Search by title" aria-label="Search lectures"><label class="sort-control" for="sortLectures"><span>Sort by</span><select id="sortLectures" aria-label="Sort lectures"><option value="date" ${appSettings.librarySort === "date" ? "selected" : ""}>Date added (newest first)</option><option value="name" ${appSettings.librarySort === "name" ? "selected" : ""}>Name (A–Z)</option><option value="chunks" ${appSettings.librarySort === "chunks" ? "selected" : ""}>Chunks (most first)</option></select></label></div><div id="list"></div>`;
   if (pendingSearch) { $("#q").value = pendingSearch; pendingSearch = ""; }
   const draw = () => {
     const q = $("#q").value.trim().toLocaleLowerCase();
@@ -1026,7 +1183,11 @@ function viewLibrary() {
     $("#list").innerHTML = lectureList(filtered, true);
   };
   $("#q").oninput = draw;
-  $("#sortLectures").onchange = draw;
+  $("#sortLectures").onchange = () => {
+    appSettings.librarySort = $("#sortLectures").value;
+    persistSettings();
+    draw();
+  };
   draw();
   $("#list").onclick = async (e) => {
     const { ren, del } = e.target.dataset;
@@ -1137,7 +1298,7 @@ const plainText = (md) => String(md || "").replace(/```[\s\S]*?```/g, " code blo
 
 const THINKING_HTML = '<div class="thinking-state"><span></span><span></span><span></span><em>Finding an answer in your lecture…</em></div>';
 const messageContentHtml = (m) => m.text ? renderRichText(m.text) : (m.status === "streaming" ? THINKING_HTML : "");
-const messageSourcesHtml = (m) => m.sources?.length ? `
+const messageSourcesHtml = (m) => appSettings.showSources && m.sources?.length ? `
   <details class="source-panel">
     <summary><span class="source-summary-icon">${ico("book-open")}</span><span><strong>Sources from your lecture</strong><small>${m.sources.length} supporting passage${m.sources.length === 1 ? "" : "s"}</small></span><span class="source-chevron">${ico("chevron-down")}</span></summary>
     <div class="source-list">${m.sources.map((source, sourceIndex) => `<article class="source-item"><div class="source-item-head"><span>PASSAGE ${String(sourceIndex + 1).padStart(2, "0")}</span>${source.time ? `<b>${ico("clock")} ${esc(source.time)}</b>` : ""}</div><p>${esc(source.text)}</p></article>`).join("")}</div>
@@ -1194,7 +1355,7 @@ async function streamAnswer(lectureId, answer) {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson", ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}) },
-      body: JSON.stringify({ question: answer.question, session_id: sid }),
+      body: JSON.stringify({ question: answer.question, session_id: sid, response_language: appSettings.responseLanguage, response_style: appSettings.responseStyle, response_length: appSettings.responseLength }),
       signal: controller.signal
     });
     if (!response.ok) {
@@ -1557,6 +1718,11 @@ function tabQuiz(el, alive = () => true) {
   const out = el.querySelector("#qz");
   const gen = el.querySelector("#gen");
   const count = el.querySelector("#n");
+  count.value = String(appSettings.quizQuestionCount);
+  count.onchange = () => {
+    const nextCount = Number(count.value);
+    if (SETTING_OPTIONS.quizQuestionCount.includes(nextCount)) { appSettings.quizQuestionCount = nextCount; persistSettings(); }
+  };
   gen.onclick = async () => {
     gen.disabled = true;
     out.innerHTML = `<p class="empty">Generating questions...</p>`;

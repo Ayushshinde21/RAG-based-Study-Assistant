@@ -37,8 +37,27 @@ def load_audio(audio_path: str, sr: int = 16000) -> np.ndarray:
     return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
 
 
+def load_audio_window(audio_path: str, start_seconds: float = 0, duration_seconds: float = 30, sr: int = 16000) -> np.ndarray:
+    """Decode only a small time window so language detection does not load hours of audio."""
+    cmd = [
+        "ffmpeg", "-nostdin", "-threads", "0", "-ss", str(max(0, start_seconds)),
+        "-i", audio_path, "-t", str(max(1, duration_seconds)), "-f", "s16le",
+        "-ac", "1", "-ar", str(sr), "-",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg was not found. Install ffmpeg and make sure it is on your PATH.")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Could not decode an audio sample: " + e.stderr.decode(errors="ignore")[-300:])
+    return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
+
+
 def detect_language(audio_path: str, audio=None) -> str:
-    _, info = model.transcribe(audio if audio is not None else load_audio(audio_path), beam_size=1)
+    sample = audio if audio is not None else load_audio_window(audio_path, 0, 30)
+    if not len(sample):
+        raise RuntimeError("Could not read audio from the beginning of this recording.")
+    _, info = model.transcribe(sample, beam_size=1)
     detected = info.language
     print(f"🌐 Detected language: {detected}")
     return detected
@@ -91,21 +110,26 @@ def transcribe_hindi(audio_path: str) -> str:
     return " ".join(s["text"] for s in segments).strip()
 
 
-def transcribe_hindi_segments(audio_path: str) -> list[dict]:
+def transcribe_hindi_segments(audio_path: str, progress_callback=None) -> list[dict]:
     """
     Same as transcribe_hindi but keeps a timestamp per 25-second Sarvam
     chunk (coarser than Whisper's segment-level timestamps, but still
     enough to cite "around 14:30" in an answer).
     """
     print("📝 Transcribing with Sarvam AI (Hindi)...")
-    hindi_chunks = _sarvam_transcribe_chunks(audio_path)
+    hindi_chunks = _sarvam_transcribe_chunks(audio_path, progress_callback=progress_callback)
 
     print("🔄 Translating Hindi → English...")
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    english_texts = [""] * len(hindi_chunks)
     with ThreadPoolExecutor(max_workers=6) as ex:
-        english_texts = list(ex.map(
-            lambda c: translate_hindi_to_english(c["text"]), hindi_chunks
-        ))
+        futures = {
+            ex.submit(translate_hindi_to_english, chunk["text"]): index
+            for index, chunk in enumerate(hindi_chunks)
+        }
+        for completed, future in enumerate(as_completed(futures), start=1):
+            english_texts[futures[future]] = future.result()
+            _report_progress(progress_callback, f"Translating Hindi segment {completed} of {len(hindi_chunks)}")
 
     result = [
         {"start": c["start"], "end": c["end"], "text": text.strip()}
@@ -117,26 +141,29 @@ def transcribe_hindi_segments(audio_path: str) -> list[dict]:
 
 
 def _get_audio_duration(audio_path: str) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            audio_path,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffprobe was not found. Install ffmpeg and make sure ffprobe is on your PATH.")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or "").strip()[-300:]
+        raise RuntimeError("Could not read the audio duration with ffprobe. " + detail)
 
-    return float(result.stdout.strip())
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        raise RuntimeError("ffprobe did not return a valid audio duration.")
 
 
-def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25):
+def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25, progress_callback=None):
     duration = _get_audio_duration(audio_path)
 
     if duration <= 30:
@@ -186,6 +213,12 @@ def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25):
         )
 
         chunk_paths.append(output_path)
+        progress_interval = max(1, total_chunks // 20)
+        if progress_callback is not None and ((i + 1) % progress_interval == 0 or i + 1 == total_chunks):
+            try:
+                progress_callback(f"Preparing audio segments {i + 1} of {total_chunks}")
+            except Exception:
+                pass
 
     print(f"✂️ Created {len(chunk_paths)} audio chunks")
 
@@ -246,7 +279,7 @@ def _sarvam_transcribe_single(audio_path: str) -> str:
     return transcript
 
 
-def _sarvam_transcribe_chunks(audio_path: str, chunk_duration: int = 25) -> list[dict]:
+def _sarvam_transcribe_chunks(audio_path: str, chunk_duration: int = 25, progress_callback=None) -> list[dict]:
     """
     Splits audio into fixed-duration chunks, transcribes each via Sarvam in
     parallel, and returns them WITH their start/end time (chunk index *
@@ -264,18 +297,26 @@ def _sarvam_transcribe_chunks(audio_path: str, chunk_duration: int = 25) -> list
     print(f"🎙️ Long audio detected: {duration / 60:.2f} minutes")
 
     with tempfile.TemporaryDirectory(prefix="sarvam_chunks_") as temp_dir:
-        chunk_paths = _split_audio(audio_path, temp_dir, chunk_duration=chunk_duration)
+        chunk_paths = _split_audio(
+            audio_path, temp_dir, chunk_duration=chunk_duration, progress_callback=progress_callback
+        )
 
         # A 1-hour lecture is ~144 chunks. Calling Sarvam one chunk at a time
         # made this the slowest single step in the whole pipeline. Chunks are
         # independent API calls, so run several in parallel; ex.map keeps
         # results in the original order.
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         print(f"📝 Sending {len(chunk_paths)} chunks to Sarvam (parallel)...")
-
+        results = [""] * len(chunk_paths)
         with ThreadPoolExecutor(max_workers=6) as ex:
-            results = list(ex.map(_sarvam_transcribe_single, chunk_paths))
+            futures = {
+                ex.submit(_sarvam_transcribe_single, chunk_path): index
+                for index, chunk_path in enumerate(chunk_paths)
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                results[futures[future]] = future.result()
+                _report_progress(progress_callback, f"Transcribing Hindi audio chunk {completed} of {len(chunk_paths)}")
 
         chunks = [
             {
@@ -302,38 +343,103 @@ def transcribe(audio_path: str) -> str:
     return " ".join(s["text"] for s in segments).strip()
 
 
-def transcribe_with_timestamps(audio_path: str) -> list[dict]:
+def _report_progress(progress_callback, message: str):
+    if progress_callback is not None:
+        try:
+            progress_callback(message)
+        except Exception:
+            pass
+
+
+def _transcribe_english_in_chunks(audio_path: str, duration: float, progress_callback=None) -> list[dict]:
+    """Transcribe long recordings in small windows to keep peak memory bounded."""
+    try:
+        chunk_seconds = int(os.getenv("WHISPER_CHUNK_SECONDS", "300"))
+    except ValueError:
+        chunk_seconds = 300
+    chunk_seconds = max(60, min(chunk_seconds, 900))
+
+    if duration <= chunk_seconds:
+        _report_progress(progress_callback, "Transcribing lecture")
+        audio = load_audio(audio_path)
+        try:
+            return transcribe_english_segments(audio_path, audio)
+        finally:
+            del audio
+            import gc
+            gc.collect()
+
+    with tempfile.TemporaryDirectory(prefix="whisper_chunks_") as temp_dir:
+        chunk_paths = _split_audio(audio_path, temp_dir, chunk_duration=chunk_seconds, progress_callback=progress_callback)
+        if not chunk_paths:
+            raise RuntimeError("Could not split the recording into transcription windows.")
+
+        all_segments = []
+        total = len(chunk_paths)
+        for index, chunk_path in enumerate(chunk_paths):
+            _report_progress(
+                progress_callback,
+                f"Transcribing audio window {index + 1} of {total} ({(index * chunk_seconds) // 60}-{min(((index + 1) * chunk_seconds), duration) // 60} min)",
+            )
+            chunk_segments = transcribe_english_segments(chunk_path)
+            offset = index * chunk_seconds
+            for segment in chunk_segments:
+                all_segments.append({
+                    "start": float(segment["start"]) + offset,
+                    "end": float(segment["end"]) + offset,
+                    "text": segment["text"],
+                })
+            del chunk_segments
+            import gc
+            gc.collect()
+
+        return all_segments
+
+
+def transcribe_with_timestamps(audio_path: str, progress_callback=None) -> list[dict]:
     """
-    Main entry point. Returns a list of {"start", "end", "text"} segments
-    instead of one joined string, so downstream chunking can attach a
-    timestamp to every chunk and chat answers can cite "see 14:32".
+    Transcribe a recording without loading its full decoded audio into memory.
+    Returns timestamped segments, including offsets for long audio windows.
     """
     if not os.path.exists(audio_path):
-        raise FileNotFoundError(
-            f"Audio file not found: {audio_path}"
-        )
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    audio = load_audio(audio_path)   # decode once, reuse for detection + transcription
-    seconds = len(audio) / 16000
-    peak = float(np.abs(audio).max()) if len(audio) else 0.0
-    print(f"🔊 Audio: {seconds:.1f}s long, peak level {peak:.3f}")
-    if seconds < 1:
+    duration = _get_audio_duration(audio_path)
+    if duration < 1:
         raise RuntimeError(
-            f"The audio file contains no usable audio ({seconds:.1f} seconds). "
+            f"The audio file contains no usable audio ({duration:.1f} seconds). "
             "The download was probably incomplete. Try again or upload the file."
         )
+
+    sample = load_audio_window(audio_path, 0, min(30, duration))
+    peak = float(np.abs(sample).max()) if len(sample) else 0.0
+    if peak < 0.001 and duration > 30:
+        sample_starts = sorted({min(60.0, max(0.0, duration - 30.0)), max(0.0, duration / 2 - 15.0)})
+        for sample_start in sample_starts:
+            candidate = load_audio_window(audio_path, sample_start, min(30, duration - sample_start))
+            candidate_peak = float(np.abs(candidate).max()) if len(candidate) else 0.0
+            if candidate_peak > peak:
+                sample, peak = candidate, candidate_peak
+            else:
+                del candidate
+            if peak >= 0.001:
+                break
+    print(f"🔊 Audio: {duration:.1f}s long, detection-sample peak {peak:.3f}")
+    if not len(sample):
+        raise RuntimeError("The audio track could not be decoded. Try another video or upload the recording again.")
     if peak < 0.001:
-        raise RuntimeError(
-            "The audio track is completely silent. The download may have failed "
-            "or the video has no sound. Try another video or upload the file."
-        )
-    lang = detect_language(audio_path, audio)
+        raise RuntimeError("The sampled audio appears silent. Check that the recording contains audible speech.")
+
+    lang = detect_language(audio_path, sample)
+    del sample
+    import gc
+    gc.collect()
 
     if lang == "hi":
-        del audio
-        return transcribe_hindi_segments(audio_path)
-    else:
-        return transcribe_english_segments(audio_path, audio)
+        _report_progress(progress_callback, "Transcribing Hindi audio in API-sized chunks")
+        return transcribe_hindi_segments(audio_path, progress_callback=progress_callback)
+
+    return _transcribe_english_in_chunks(audio_path, duration, progress_callback)
 
 
 def format_timestamp(seconds: float) -> str:

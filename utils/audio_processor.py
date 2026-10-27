@@ -113,6 +113,123 @@ def download_youtube_audio(url: str) -> str:
     )
 
 
+
+def _caption_timestamp_to_seconds(value: str) -> float:
+    value = value.strip().replace(",", ".")
+    pieces = value.split(":")
+    if len(pieces) == 2:
+        minutes, seconds = pieces
+        hours = 0
+    elif len(pieces) == 3:
+        hours, minutes, seconds = pieces
+    else:
+        raise ValueError("Invalid caption timestamp")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def parse_caption_file(caption_path: str) -> list[dict]:
+    """Read timestamped VTT/SRT captions into the segment format used by the indexer."""
+    import html
+    import re
+
+    with open(caption_path, "r", encoding="utf-8-sig", errors="replace") as file:
+        content = file.read().replace("\r\n", "\n").replace("\r", "\n")
+
+    timestamp = re.compile(
+        r"^\s*((?:\d{2}:)?\d{2}:\d{2}[.,]\d{1,3})\s+-->\s+((?:\d{2}:)?\d{2}:\d{2}[.,]\d{1,3})"
+    )
+    segments = []
+    for block in re.split(r"\n\s*\n", content):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        match_index = next((i for i, line in enumerate(lines) if timestamp.match(line)), None)
+        if match_index is None:
+            continue
+        match = timestamp.match(lines[match_index])
+        try:
+            start = _caption_timestamp_to_seconds(match.group(1))
+            end = _caption_timestamp_to_seconds(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        text_lines = lines[match_index + 1:]
+        clean = " ".join(text_lines)
+        clean = re.sub(r"<[^>]*>", "", clean)
+        clean = html.unescape(clean)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if clean and end >= start:
+            segments.append({"start": start, "end": end, "text": clean})
+    return segments
+
+
+def download_youtube_captions(url: str) -> tuple[list[dict], str] | None:
+    """Try English human/auto captions first; return None so callers can fall back to audio."""
+    import glob
+
+    cookie_file = _get_cookie_file()
+    proxy = _get_proxy()
+    for clients in _CLIENT_STRATEGIES:
+        with tempfile.TemporaryDirectory(prefix="yt_captions_") as temp_dir:
+            output_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
+            options = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["en", "en-US", "en-GB", "en-orig"],
+                "subtitlesformat": "vtt/best",
+                "outtmpl": output_template,
+                "restrictfilenames": True,
+                "noplaylist": True,
+                "retries": 2,
+                "socket_timeout": 20,
+                "quiet": True,
+                "no_warnings": True,
+                "js_runtimes": {"node": {}},
+            }
+            if cookie_file:
+                options["cookiefile"] = cookie_file
+            if proxy:
+                options["proxy"] = proxy
+            if clients:
+                options["extractor_args"] = {"youtube": {"player_client": clients}}
+
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                caption_paths = glob.glob(os.path.join(temp_dir, "*.vtt")) + glob.glob(os.path.join(temp_dir, "*.srt"))
+                if not caption_paths:
+                    print("ℹ️ This video has no downloadable English captions.")
+                    return None
+
+                def language_priority(path: str) -> tuple[int, str]:
+                    name = os.path.basename(path).lower()
+                    if ".en." in name:
+                        rank = 0
+                    elif ".en-orig." in name:
+                        rank = 1
+                    elif ".en-us." in name:
+                        rank = 2
+                    elif ".en-gb." in name:
+                        rank = 3
+                    else:
+                        rank = 10
+                    return rank, name
+
+                for caption_path in sorted(caption_paths, key=language_priority):
+                    # Skip non-English caption tracks if yt-dlp downloaded a fallback track.
+                    name = os.path.basename(caption_path).lower()
+                    if not any(code in name for code in (".en.", ".en-orig.", ".en-us.", ".en-gb.")):
+                        continue
+                    segments = parse_caption_file(caption_path)
+                    if segments:
+                        title = str((info or {}).get("title") or (info or {}).get("id") or "YouTube lecture")
+                        print(f"✅ Using YouTube captions: {len(segments)} segments")
+                        return segments, title
+            except Exception as e:
+                print(f"⚠️ YouTube caption retrieval failed with client {clients or 'default'}: {e}")
+                continue
+
+    print("ℹ️ No usable English YouTube captions found; falling back to audio transcription.")
+    return None
+
 def extract_audio_from_video(video_path: str) -> str:
     """
     Extract audio from an uploaded video file (.mp4, .mkv, .avi etc.)

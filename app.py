@@ -749,20 +749,36 @@ def process_uploaded_file(source):
 
         with st.status("Building your study workspace...", expanded=True) as status:
             try:
-                stage = "audio extraction"
-                st.write("🎵 Extracting audio")
-                from utils.audio_processor import get_audio_path
-                audio_path = get_audio_path(source if is_url else tmp_path)
-                if not audio_path or not os.path.exists(audio_path):
-                    raise RuntimeError("No audio could be extracted from this source.")
+                video_title = None
+                transcript_path = None
+                if is_url:
+                    stage = "checking YouTube captions"
+                    st.write("🗒️ Checking whether English captions are available")
+                    from utils.audio_processor import download_youtube_captions
+                    caption_result = download_youtube_captions(source)
+                    if caption_result:
+                        from utils.transcriber import save_transcript
+                        segments, video_title = caption_result
+                        safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", video_title).strip("._")[:150] or "YouTube_lecture"
+                        transcript_path = save_transcript(segments, os.path.join("audio_files", safe_title + ".mp3"))
+                        del segments
+                        gc.collect()
 
-                stage = "transcription"
-                st.write("📝 Transcribing lecture")
-                from utils.transcriber import transcribe_with_timestamps, save_transcript
-                segments = transcribe_with_timestamps(audio_path)
-                if not segments:
-                    raise RuntimeError("The transcription came back empty. The recording may be silent or unreadable.")
-                transcript_path = save_transcript(segments, audio_path)
+                if transcript_path is None:
+                    stage = "audio extraction"
+                    st.write("🎵 Extracting audio")
+                    from utils.audio_processor import get_audio_path
+                    audio_path = get_audio_path(source if is_url else tmp_path)
+                    if not audio_path or not os.path.exists(audio_path):
+                        raise RuntimeError("No audio could be extracted from this source.")
+
+                    stage = "transcription"
+                    st.write("📝 Transcribing lecture")
+                    from utils.transcriber import transcribe_with_timestamps, save_transcript
+                    segments = transcribe_with_timestamps(audio_path)
+                    if not segments:
+                        raise RuntimeError("The transcription came back empty. The recording may be silent or unreadable.")
+                    transcript_path = save_transcript(segments, audio_path)
 
                 # Release transcription memory before the embedding model loads.
                 del segments
@@ -811,7 +827,7 @@ def process_uploaded_file(source):
                 # The lecture is only registered (saved to the library) once
                 # everything above has succeeded.
                 stage = "saving to your library"
-                lecture_title = os.path.splitext(os.path.basename(audio_path))[0]
+                lecture_title = video_title or os.path.splitext(os.path.basename(audio_path))[0]
                 lecture_id = register_lecture(
                     title=lecture_title,
                     collection_name=collection_name,
