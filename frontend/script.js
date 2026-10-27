@@ -1002,13 +1002,31 @@ async function track(request) {
 
 // Library
 function viewLibrary() {
-  $("#view").innerHTML = `<h1>My lectures</h1><input id="q" class="search" placeholder="Search by title" aria-label="Search lectures"><div id="list"></div>`;
+  $("#view").innerHTML = `<h1>My lectures</h1><div class="lecture-library-controls"><input id="q" class="search" placeholder="Search by title" aria-label="Search lectures"><label class="sort-control" for="sortLectures"><span>Sort by</span><select id="sortLectures" aria-label="Sort lectures"><option value="date">Date added (newest first)</option><option value="name">Name (A–Z)</option><option value="chunks">Chunks (most first)</option></select></label></div><div id="list"></div>`;
   if (pendingSearch) { $("#q").value = pendingSearch; pendingSearch = ""; }
   const draw = () => {
-    const q = $("#q").value.toLowerCase();
-    $("#list").innerHTML = lectureList(lectures.filter((l) => l.title.toLowerCase().includes(q)), true);
+    const q = $("#q").value.trim().toLocaleLowerCase();
+    const sortBy = $("#sortLectures").value;
+    const filtered = lectures.filter((l) => String(l.title || "").toLocaleLowerCase().includes(q));
+    const timestamp = (lecture) => {
+      const parsed = Date.parse(lecture.created_at || "");
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    filtered.sort((a, b) => {
+      if (sortBy === "name") {
+        return String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base", numeric: true });
+      }
+      if (sortBy === "chunks") {
+        return (Number(b.num_chunks) || 0) - (Number(a.num_chunks) || 0)
+          || String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base", numeric: true });
+      }
+      return timestamp(b) - timestamp(a)
+        || String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base", numeric: true });
+    });
+    $("#list").innerHTML = lectureList(filtered, true);
   };
   $("#q").oninput = draw;
+  $("#sortLectures").onchange = draw;
   draw();
   $("#list").onclick = async (e) => {
     const { ren, del } = e.target.dataset;
@@ -1035,7 +1053,8 @@ function viewWorkspace() {
     $("#view").innerHTML = `<div class="workspace-empty"><h1>Choose a lecture</h1><p>Open a lecture to start chatting.</p><a class="btn" href="#/lectures">Browse lectures ${ico("arrow-right")}</a></div>`;
     return;
   }
-  const tabs = { Chat: tabChat, Summary: tabSummary, "Detailed Notes": tabDetailedNotes, Quiz: tabQuiz, Evaluation: tabEval };
+  const tabs = { Chat: tabChat, Summary: tabSummary, "Detailed Notes": tabDetailedNotes, Quiz: tabQuiz };
+  if (currentUser?.role === "admin") tabs.Evaluation = tabEval;
   const tabIcons = { Chat: "message-circle", Summary: "file-text", "Detailed Notes": "book-open", Quiz: "clipboard-check", Evaluation: "file-check" };
   $("#view").innerHTML = `
     <div class="workspace-page-head">

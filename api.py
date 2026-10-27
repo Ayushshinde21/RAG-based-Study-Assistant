@@ -808,7 +808,7 @@ class EvalRequest(BaseModel):
 
 
 @app.post("/api/lectures/{lecture_id}/evaluate")
-def evaluate(lecture_id: str, req: EvalRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
+def evaluate(lecture_id: str, req: EvalRequest, user: dict = Depends(ADMIN_ONLY)):
     require_lecture_access(lecture_id, user)
     from features.evaluator import quick_evaluate
     engine = get_engine(lecture_id, "eval-" + uuid.uuid4().hex[:8])  # fresh memory, not the chat's

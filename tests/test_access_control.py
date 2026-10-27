@@ -128,7 +128,31 @@ def test_students_only_list_and_open_owned_lectures(monkeypatch, tmp_path):
     assert student_one.get("/api/lectures/legacy/summary").status_code == 404
     assert student_one.get("/api/lectures/owned-one/summary").json()["summary"] == "summary for owned lecture"
 
-    admin.post("/api/auth/login", json={
+    admin_login = admin.post("/api/auth/login", json={
         "email": "admin@example.com", "password": "unique-admin-password-2026"
     })
+    assert admin_login.status_code == 200
     assert {item["id"] for item in admin.get("/api/lectures").json()} == {"owned-one", "owned-two", "legacy"}
+
+    eval_payload = {"items": [{"question": "What is tested?", "ground_truth": "Role access"}]}
+    student_eval = student_one.post(
+        "/api/lectures/owned-one/evaluate", json=eval_payload,
+        headers={"X-CSRF-Token": one["csrf_token"]},
+    )
+    assert student_eval.status_code == 403
+
+    fake_evaluator = types.ModuleType("features.evaluator")
+    fake_evaluator.quick_evaluate = lambda engine, items: {
+        "faithfulness": 0.9,
+        "answer_relevancy": 0.8,
+        "context_precision": 0.85,
+        "context_recall": 0.75,
+    }
+    monkeypatch.setitem(sys.modules, "features.evaluator", fake_evaluator)
+    monkeypatch.setattr(api, "get_engine", lambda *args: object())
+    admin_eval = admin.post(
+        "/api/lectures/owned-one/evaluate", json=eval_payload,
+        headers={"X-CSRF-Token": admin_login.json()["csrf_token"]},
+    )
+    assert admin_eval.status_code == 200, admin_eval.text
+    assert admin_eval.json()["n"] == 1
