@@ -54,6 +54,31 @@ class TestLongVideoProcessing(unittest.TestCase):
         chunks.assert_called_once()
         self.assertEqual(chunks.call_args.args[1], 10800)
 
+
+    def test_non_english_chunked_transcription_uses_translate_task_and_absolute_timestamps(self):
+        mocked_segments = [
+            [{"start": 1.0, "end": 2.0, "text": "translated one"}],
+            [{"start": 3.0, "end": 4.0, "text": "translated two"}],
+        ]
+        with mock.patch.dict(os.environ, {"WHISPER_CHUNK_SECONDS": "300"}), \
+             mock.patch.object(self.transcriber, "_split_audio", return_value=["p1", "p2"]), \
+             mock.patch.object(self.transcriber, "transcribe_english_segments", side_effect=mocked_segments) as transcribe:
+            result = self.transcriber._transcribe_english_in_chunks(
+                "long.mp3", 650, language="fr", task="translate"
+            )
+
+        self.assertEqual([item["start"] for item in result], [1.0, 303.0])
+        self.assertEqual([item["text"] for item in result], ["translated one", "translated two"])
+        self.assertEqual(transcribe.call_args_list[0].kwargs, {"language": "fr", "task": "translate"})
+        self.assertEqual(transcribe.call_args_list[1].kwargs, {"language": "fr", "task": "translate"})
+
+    def test_audio_split_missing_ffmpeg_has_actionable_error(self):
+        with mock.patch.object(self.transcriber, "_get_audio_duration", return_value=60), \
+             mock.patch.object(self.transcriber.subprocess, "run", side_effect=FileNotFoundError):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                with self.assertRaisesRegex(RuntimeError, "ffmpeg was not found"):
+                    self.transcriber._split_audio("input.mp3", temp_dir, chunk_duration=60)
+
     def test_caption_parser_preserves_timestamps_and_cleans_markup(self):
         fake_yt_dlp = types.ModuleType("yt_dlp")
         fake_yt_dlp.utils = types.SimpleNamespace(DownloadError=Exception)

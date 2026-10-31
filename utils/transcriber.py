@@ -5,6 +5,7 @@ import subprocess
 import numpy as np
 from faster_whisper import WhisperModel
 from utils.translator import translate_hindi_to_english
+from utils.http_retry import post_with_retry, provider_max_workers
 
 model = WhisperModel("small", device="cpu", compute_type="int8")
 
@@ -69,7 +70,12 @@ def transcribe_english(audio_path: str) -> str:
     return " ".join(s["text"] for s in segments).strip()
 
 
-def transcribe_english_segments(audio_path: str, audio=None) -> list[dict]:
+def transcribe_english_segments(
+    audio_path: str,
+    audio=None,
+    language: str = "en",
+    task: str = "transcribe",
+) -> list[dict]:
     """
     Same as transcribe_english but keeps each segment's start/end time —
     Whisper returns these for free, we just weren't keeping them before.
@@ -78,13 +84,13 @@ def transcribe_english_segments(audio_path: str, audio=None) -> list[dict]:
     if audio is None:
         audio = load_audio(audio_path)
     if batched_model is not None:
-        print("📝 Transcribing with Whisper (English, batched + VAD)...")
+        print(f"📝 Processing audio with Whisper (language={language}, task={task}, batched + VAD)...")
         segments, _ = batched_model.transcribe(
-            audio, language="en", vad_filter=True, batch_size=16
+            audio, language=language, task=task, vad_filter=True, batch_size=16
         )
     else:
-        print("📝 Transcribing with Whisper (English)...")
-        segments, _ = model.transcribe(audio, language="en", vad_filter=True)
+        print(f"📝 Processing audio with Whisper (language={language}, task={task})...")
+        segments, _ = model.transcribe(audio, language=language, task=task, vad_filter=True)
 
     def _collect(segs):
         return [
@@ -97,7 +103,7 @@ def transcribe_english_segments(audio_path: str, audio=None) -> list[dict]:
         # The silence filter (VAD) can wrongly discard everything on quiet or
         # music-heavy audio. Retry once with it off before giving up.
         print("⚠️ No speech found with VAD on. Retrying without VAD...")
-        segments, _ = model.transcribe(audio, language="en", vad_filter=False)
+        segments, _ = model.transcribe(audio, language=language, task=task, vad_filter=False)
         result = _collect(segments)
     total_chars = sum(len(s["text"]) for s in result)
     print(f"✅ Transcription done! ({total_chars} characters, {len(result)} segments)")
@@ -158,9 +164,12 @@ def _get_audio_duration(audio_path: str) -> float:
         raise RuntimeError("Could not read the audio duration with ffprobe. " + detail)
 
     try:
-        return float(result.stdout.strip())
+        duration = float(result.stdout.strip())
     except ValueError:
         raise RuntimeError("ffprobe did not return a valid audio duration.")
+    if not math.isfinite(duration) or duration < 0:
+        raise RuntimeError("ffprobe returned an invalid audio duration.")
+    return duration
 
 
 def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25, progress_callback=None):
@@ -186,31 +195,41 @@ def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25, pro
             f"chunk_{i + 1:04d}.mp3"
         )
 
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                str(start),
-                "-i",
-                audio_path,
-                "-t",
-                str(chunk_duration),
-                "-vn",
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                "64k",
-                output_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-y",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    audio_path,
+                    "-t",
+                    str(chunk_duration),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "libmp3lame",
+                    "-b:a",
+                    "64k",
+                    output_path,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg was not found. Install ffmpeg and make sure it is on your PATH.")
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip()[-300:]
+            raise RuntimeError(
+                f"FFmpeg could not prepare audio segment {i + 1} of {total_chunks}. {detail}"
+            ) from exc
 
         chunk_paths.append(output_path)
         progress_interval = max(1, total_chunks // 20)
@@ -226,8 +245,6 @@ def _split_audio(audio_path: str, output_dir: str, chunk_duration: int = 25, pro
 
 
 def _sarvam_transcribe_single(audio_path: str) -> str:
-    import requests
-
     api_key = os.getenv("SARVAM_API_KEY")
 
     if not api_key:
@@ -236,31 +253,34 @@ def _sarvam_transcribe_single(audio_path: str) -> str:
     url = "https://api.sarvam.ai/speech-to-text"
 
     with open(audio_path, "rb") as f:
-        files = {
-            "file": (
-                os.path.basename(audio_path),
-                f,
-                "audio/mpeg"
-            )
-        }
+        audio_bytes = f.read()
 
-        headers = {
-            "api-subscription-key": api_key
-        }
-
-        data = {
-            "language_code": "hi-IN",
-            "model": "saaras:v3",
-            "mode": "transcribe",
-        }
-
-        response = requests.post(
-            url,
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=120,
+    files = {
+        "file": (
+            os.path.basename(audio_path),
+            audio_bytes,
+            "audio/mpeg"
         )
+    }
+
+    headers = {
+        "api-subscription-key": api_key
+    }
+
+    data = {
+        "language_code": "hi-IN",
+        "model": "saaras:v3",
+        "mode": "transcribe",
+    }
+
+    response = post_with_retry(
+        url,
+        headers=headers,
+        files=files,
+        data=data,
+        timeout=(10, 120),
+        max_attempts=3,
+    )
 
     if response.status_code != 200:
         raise RuntimeError(
@@ -309,7 +329,7 @@ def _sarvam_transcribe_chunks(audio_path: str, chunk_duration: int = 25, progres
 
         print(f"📝 Sending {len(chunk_paths)} chunks to Sarvam (parallel)...")
         results = [""] * len(chunk_paths)
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        with ThreadPoolExecutor(max_workers=provider_max_workers()) as ex:
             futures = {
                 ex.submit(_sarvam_transcribe_single, chunk_path): index
                 for index, chunk_path in enumerate(chunk_paths)
@@ -351,7 +371,13 @@ def _report_progress(progress_callback, message: str):
             pass
 
 
-def _transcribe_english_in_chunks(audio_path: str, duration: float, progress_callback=None) -> list[dict]:
+def _transcribe_english_in_chunks(
+    audio_path: str,
+    duration: float,
+    progress_callback=None,
+    language: str = "en",
+    task: str = "transcribe",
+) -> list[dict]:
     """Transcribe long recordings in small windows to keep peak memory bounded."""
     try:
         chunk_seconds = int(os.getenv("WHISPER_CHUNK_SECONDS", "300"))
@@ -360,10 +386,13 @@ def _transcribe_english_in_chunks(audio_path: str, duration: float, progress_cal
     chunk_seconds = max(60, min(chunk_seconds, 900))
 
     if duration <= chunk_seconds:
-        _report_progress(progress_callback, "Transcribing lecture")
+        action = "Translating lecture to English" if task == "translate" else "Transcribing lecture"
+        _report_progress(progress_callback, action)
         audio = load_audio(audio_path)
         try:
-            return transcribe_english_segments(audio_path, audio)
+            return transcribe_english_segments(
+                audio_path, audio, language=language, task=task
+            )
         finally:
             del audio
             import gc
@@ -381,7 +410,9 @@ def _transcribe_english_in_chunks(audio_path: str, duration: float, progress_cal
                 progress_callback,
                 f"Transcribing audio window {index + 1} of {total} ({(index * chunk_seconds) // 60}-{min(((index + 1) * chunk_seconds), duration) // 60} min)",
             )
-            chunk_segments = transcribe_english_segments(chunk_path)
+            chunk_segments = transcribe_english_segments(
+                chunk_path, language=language, task=task
+            )
             offset = index * chunk_seconds
             for segment in chunk_segments:
                 all_segments.append({
@@ -435,11 +466,22 @@ def transcribe_with_timestamps(audio_path: str, progress_callback=None) -> list[
     import gc
     gc.collect()
 
-    if lang == "hi":
+    if lang == "hi" and os.getenv("SARVAM_API_KEY"):
         _report_progress(progress_callback, "Transcribing Hindi audio in API-sized chunks")
         return transcribe_hindi_segments(audio_path, progress_callback=progress_callback)
 
-    return _transcribe_english_in_chunks(audio_path, duration, progress_callback)
+    if lang == "en":
+        return _transcribe_english_in_chunks(
+            audio_path, duration, progress_callback, language="en", task="transcribe"
+        )
+
+    _report_progress(
+        progress_callback,
+        f"Translating detected {lang} speech to English with local Whisper",
+    )
+    return _transcribe_english_in_chunks(
+        audio_path, duration, progress_callback, language=lang, task="translate"
+    )
 
 
 def format_timestamp(seconds: float) -> str:

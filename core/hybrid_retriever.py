@@ -3,6 +3,20 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_chroma import Chroma
 
 
+def _document_identity(doc: Document) -> tuple:
+    """Identify a passage without collapsing identical text from different sources."""
+    metadata = doc.metadata or {}
+    return (
+        doc.page_content,
+        metadata.get("source"),
+        metadata.get("filename"),
+        metadata.get("page_number"),
+        metadata.get("slide_number"),
+        metadata.get("start_time_str"),
+        metadata.get("document_chunk", metadata.get("chunk_id")),
+    )
+
+
 def reciprocal_rank_fusion(
     dense_results: list[Document],
     bm25_results: list[Document],
@@ -18,13 +32,13 @@ def reciprocal_rank_fusion(
 
     # score dense results
     for rank, doc in enumerate(dense_results):
-        key = doc.page_content
+        key = _document_identity(doc)
         scores[key] = scores.get(key, 0) + 1 / (k + rank + 1)
         doc_map[key] = doc
 
     # score BM25 results
     for rank, doc in enumerate(bm25_results):
-        key = doc.page_content
+        key = _document_identity(doc)
         scores[key] = scores.get(key, 0) + 1 / (k + rank + 1)
         doc_map[key] = doc
 

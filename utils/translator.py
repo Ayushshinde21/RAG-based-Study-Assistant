@@ -1,5 +1,5 @@
 import os
-import requests
+from utils.http_retry import post_with_retry, provider_max_workers
 
 
 def translate_hindi_to_english(hindi_text: str) -> str:
@@ -33,13 +33,22 @@ def translate_hindi_to_english(hindi_text: str) -> str:
             "mode": "formal",
             "model": "mayura:v1",
         }
-        response = requests.post(url, headers=headers, json=payload)
+        response = post_with_retry(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=(10, 60),
+            max_attempts=3,
+        )
 
         if response.status_code != 200:
             raise RuntimeError(f"Sarvam Translate error {response.status_code}: {response.text}")
 
         result = response.json()
-        return result.get("translated_text", "")
+        translated = result.get("translated_text", "").strip()
+        if not translated:
+            raise RuntimeError("Sarvam Translate returned an empty translation.")
+        return translated
 
     if len(chunks) == 1:
         return _translate_chunk(chunks[0])
@@ -49,7 +58,7 @@ def translate_hindi_to_english(hindi_text: str) -> str:
     # still reads in the original sequence once joined.
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=provider_max_workers()) as ex:
         translated_chunks = list(ex.map(_translate_chunk, chunks))
 
     return " ".join(translated_chunks)

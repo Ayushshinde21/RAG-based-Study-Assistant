@@ -21,7 +21,9 @@ Do not launch publicly until every release blocker is complete.
 - [ ] Confirm which external AI/transcription providers are active in production and update the privacy policy if the configuration differs from the code paths inspected.
 - [ ] Confirm that public deployment starts the protected FastAPI site through the Dockerfile, not the legacy `streamlit run app.py` interface.
 - [ ] Test the implemented student/farmer/admin authentication, CSRF checks, lecture ownership filters, farmer-only farm API permissions, farm ownership filters, and admin account disable/revoke flow in an isolated deployment before any public release. Legacy lecture registry entries without an owner are admin-only until reviewed.
-- [ ] Add abuse protection and rate limits for upload, processing, and model-backed endpoints.
+- [x] Add process-local login throttling, model-request limits, and bounded per-user/total processing-job limits. These are not global across multiple workers or instances.
+- [ ] Add shared abuse protection and rate limits for upload and model-backed endpoints before horizontal scaling (for example Redis-backed quotas).
+- [ ] Move long-running ingestion from in-process daemon threads to a durable queue/worker system before multi-instance production deployment.
 - [ ] Test upload limits, delete/rename operations, role and ownership checks, HTTPS, error handling, and API-key handling on the production deployment. Set `SESSION_COOKIE_SECURE=1` for HTTPS.
 - [ ] Run the project tests and a browser smoke test against the deployed backend.
 

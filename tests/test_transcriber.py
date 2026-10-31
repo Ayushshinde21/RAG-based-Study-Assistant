@@ -38,7 +38,8 @@ class TestTranscribeRouting(unittest.TestCase):
             self.assertEqual(self.t.transcribe(self.audio.name), "hello world")
 
     def test_hindi_uses_sarvam_path(self):
-        with mock.patch.object(self.t, "_get_audio_duration", return_value=60), \
+        with mock.patch.dict(os.environ, {"SARVAM_API_KEY": "test-key"}), \
+             mock.patch.object(self.t, "_get_audio_duration", return_value=60), \
              mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
              mock.patch.object(self.t, "detect_language", return_value="hi"), \
              mock.patch.object(self.t, "transcribe_hindi_segments", return_value=[{"start": 0, "end": 20, "text": "translated"}]) as hindi:
@@ -46,15 +47,43 @@ class TestTranscribeRouting(unittest.TestCase):
         self.assertEqual(result[0]["text"], "translated")
         hindi.assert_called_once_with(self.audio.name, progress_callback=None)
 
-    def test_other_language_uses_chunked_english_fallback(self):
+    def test_other_language_uses_local_whisper_translation_task(self):
         expected = [{"start": 0, "end": 1, "text": "translated to English"}]
         with mock.patch.object(self.t, "_get_audio_duration", return_value=720), \
              mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
              mock.patch.object(self.t, "detect_language", return_value="fr"), \
-             mock.patch.object(self.t, "_transcribe_english_in_chunks", return_value=expected) as english:
+             mock.patch.object(self.t, "_transcribe_english_in_chunks", return_value=expected) as translate:
             result = self.t.transcribe_with_timestamps(self.audio.name)
         self.assertEqual(result, expected)
-        english.assert_called_once_with(self.audio.name, 720, None)
+        translate.assert_called_once_with(
+            self.audio.name, 720, None, language="fr", task="translate"
+        )
+
+    def test_english_uses_transcription_task(self):
+        expected = [{"start": 0, "end": 1, "text": "English transcript"}]
+        with mock.patch.object(self.t, "_get_audio_duration", return_value=60), \
+             mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
+             mock.patch.object(self.t, "detect_language", return_value="en"), \
+             mock.patch.object(self.t, "_transcribe_english_in_chunks", return_value=expected) as transcribe:
+            result = self.t.transcribe_with_timestamps(self.audio.name)
+        self.assertEqual(result, expected)
+        transcribe.assert_called_once_with(
+            self.audio.name, 60, None, language="en", task="transcribe"
+        )
+
+    def test_hindi_without_sarvam_key_uses_local_whisper_translation(self):
+        expected = [{"start": 0, "end": 1, "text": "Hindi speech translated to English"}]
+        getenv = lambda key, default=None: None if key == "SARVAM_API_KEY" else default
+        with mock.patch.object(self.t, "_get_audio_duration", return_value=60), \
+             mock.patch.object(self.t, "load_audio_window", return_value=np.ones(16000, dtype=np.float32)), \
+             mock.patch.object(self.t, "detect_language", return_value="hi"), \
+             mock.patch.object(self.t.os, "getenv", side_effect=getenv), \
+             mock.patch.object(self.t, "_transcribe_english_in_chunks", return_value=expected) as translate:
+            result = self.t.transcribe_with_timestamps(self.audio.name)
+        self.assertEqual(result, expected)
+        translate.assert_called_once_with(
+            self.audio.name, 60, None, language="hi", task="translate"
+        )
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):

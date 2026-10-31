@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 # YOUTUBE_ENABLED=0 disables full YouTube audio downloads; caption-only processing is still attempted.
-ENV PYTHONUNBUFFERED=1 \
+ENV APP_ENV=production \
+    PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/models \
     TOKENIZERS_PARALLELISM=false \

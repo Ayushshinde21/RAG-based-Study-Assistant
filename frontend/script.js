@@ -974,26 +974,35 @@ function viewDashboard() {
         <p>Add a lecture to chat with it, make notes, or practise.</p>
       </div>
       <section class="study-upload-area" aria-label="Add study material">
-        <div class="study-composer">
+        <div class="study-composer" data-drop-target="media">
           <div class="study-composer-label">Start with a lecture</div>
           <input type="file" id="file" accept="video/*,audio/*" hidden>
           <div class="study-composer-actions">
             <button type="button" class="btn study-upload-button" id="choose-file">${ico("plus")} <span>Upload audio or video</span></button>
             <button type="button" id="youtube-toggle" class="study-link-button" hidden>Use YouTube</button>
           </div>
-          <div class="study-upload-note" id="hint">Audio and video files supported.</div>
+          <div class="study-upload-note" id="hint">Audio and video files supported. You can also drop one file here.</div>
         </div>
         <div id="ytrow" class="youtube-row" hidden><input id="yt" type="url" placeholder="Paste a YouTube URL" aria-label="YouTube lecture URL"><button type="button" class="btn btn-sm" id="ytb">Add link ${ico("arrow-up-right")}</button></div>
         <section id="picked-card" class="picked-upload" hidden>
           <div class="picked-file-icon">${ico("file-text")}</div><div class="picked-file-copy"><strong id="fname">Selected lecture</strong><small id="file-detail">Ready to process</small></div>
           <button type="button" id="up" class="btn btn-sm">Process ${ico("arrow-right")}</button><button type="button" id="cancel-file" class="ghost">Cancel</button>
         </section>
-        <section id="reference-card" class="reference-upload-card" hidden>
-          <div class="reference-upload-copy"><div class="reference-upload-heading"><strong>Add lecturer notes</strong> <span>Optional</span></div><p>Attach slides or handouts to ground answers in class material.</p><small id="reference-files-detail">PDF, DOCX, PPTX, TXT or Markdown</small></div>
+        <section id="reference-card" class="reference-upload-card" data-drop-target="references" hidden>
+          <div class="reference-upload-copy"><div class="reference-upload-heading"><strong>Add lecturer notes</strong> <span>Optional</span></div><p>Attach slides or handouts to ground answers in class material. You can also drop files here.</p><small id="reference-files-detail">PDF, DOCX, PPTX, TXT or Markdown</small></div>
           <input type="file" id="reference-files" accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown" multiple hidden>
           <button type="button" class="btn btn-sm" id="choose-reference-files">Add files</button>
         </section>
-        <section id="prog" class="processing-card" hidden><div class="processing-heading"><span class="processing-spinner"></span><div><strong>Preparing your study space</strong><p id="stage">Uploading...</p></div></div><div class="bar"><i id="barfill"></i></div></section>
+        <section id="document-upload-card" class="reference-upload-card document-upload-card" data-drop-target="documents">
+          <div class="reference-upload-copy"><div class="reference-upload-heading"><strong>Start with documents</strong></div><p>Build a study workspace directly from PDFs, Word files, PowerPoint slides, text files or Markdown. No audio or video is required. You can also drop files here.</p><small id="document-files-detail">PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files, 15 MB each</small></div>
+          <input type="file" id="document-files" accept=".pdf,.docx,.pptx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown" multiple hidden>
+          <button type="button" class="btn btn-sm" id="choose-documents">Choose documents</button>
+        </section>
+        <section id="document-picked-card" class="picked-upload" hidden>
+          <div class="picked-file-icon">${ico("file-text")}</div><div class="picked-file-copy"><strong id="document-fname">Selected documents</strong><small id="document-file-detail">Ready to process</small></div>
+          <button type="button" id="process-documents" class="btn btn-sm">Build study space ${ico("arrow-right")}</button><button type="button" id="cancel-documents" class="ghost">Cancel</button>
+        </section>
+        <section id="prog" class="processing-card" aria-live="polite" hidden><div class="processing-heading"><span class="processing-spinner" aria-hidden="true"></span><div><strong>Preparing your study space</strong><p id="stage" role="status" aria-live="polite">Uploading...</p></div></div><div class="bar" role="progressbar" aria-label="Study material processing" aria-valuemin="0" aria-valuemax="100" aria-valuenow="3"><i id="barfill"></i></div></section>
       </section>
       <section class="recent-study-section">
         <div class="recent-study-heading"><h2>Recent lectures</h2><a href="#/lectures" class="text-link">View all ${ico("arrow-right")}</a></div>
@@ -1004,11 +1013,58 @@ function viewDashboard() {
 
   const fileInput = $("#file");
   const referenceInput = $("#reference-files");
+  const documentInput = $("#document-files");
   const pickedCard = $("#picked-card");
   const referenceCard = $("#reference-card");
+  const documentPickedCard = $("#document-picked-card");
   const choose = () => fileInput.click();
+  const assignDroppedFiles = (input, files) => {
+    if (typeof DataTransfer === "undefined") {
+      toast("Drag-and-drop is unavailable in this browser. Use the file selection button instead.");
+      return;
+    }
+    const transfer = new DataTransfer();
+    Array.from(files || []).forEach((file) => transfer.items.add(file));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const bindDropTarget = (target, input, multiple = false) => {
+    if (!target || !input) return;
+    const carriesFiles = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+    target.addEventListener("dragenter", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      target.classList.add("is-dragover");
+    });
+    target.addEventListener("dragover", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      target.classList.add("is-dragover");
+    });
+    target.addEventListener("dragleave", (event) => {
+      if (!target.contains(event.relatedTarget)) target.classList.remove("is-dragover");
+    });
+    target.addEventListener("drop", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      target.classList.remove("is-dragover");
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (!files.length) return;
+      if (!multiple && files.length !== 1) {
+        toast("Drop one audio or video file at a time.");
+        return;
+      }
+      assignDroppedFiles(input, multiple ? files : files.slice(0, 1));
+    });
+  };
+  bindDropTarget(document.querySelector('[data-drop-target="media"]'), fileInput, false);
+  bindDropTarget(document.querySelector('[data-drop-target="documents"]'), documentInput, true);
+  bindDropTarget(document.querySelector('[data-drop-target="references"]'), referenceInput, true);
   let maxReferenceMB = 15;
   let maxReferenceFiles = 5;
+  let maxDocumentMB = 15;
+  let maxDocumentFiles = 5;
   const syncReferenceCard = () => {
     referenceCard.hidden = !fileInput.files.length && $("#ytrow").hidden;
   };
@@ -1019,6 +1075,14 @@ function viewDashboard() {
   fileInput.onchange = (e) => {
     const file = e.target.files[0];
     if (!file) { pickedCard.hidden = true; syncReferenceCard(); return; }
+    const allowedMediaExtensions = new Set(["mp4", "mkv", "avi", "mov", "webm", "mp3", "wav", "m4a", "ogg", "flac"]);
+    const extension = file.name.split(".").pop().toLowerCase();
+    if (!(file.type.startsWith("audio/") || file.type.startsWith("video/") || allowedMediaExtensions.has(extension))) {
+      fileInput.value = "";
+      pickedCard.hidden = true;
+      syncReferenceCard();
+      return toast("Choose a supported audio or video file.");
+    }
     $("#fname").textContent = file.name;
     $("#file-detail").textContent = `${(file.size / 1048576).toFixed(1)} MB · Ready to process`;
     pickedCard.hidden = false;
@@ -1034,6 +1098,13 @@ function viewDashboard() {
   $("#choose-reference-files").onclick = () => referenceInput.click();
   referenceInput.onchange = () => {
     const files = selectedReferenceFiles();
+    const allowedReferenceExtensions = new Set(["pdf", "docx", "pptx", "txt", "md"]);
+    const unsupported = files.find((item) => !allowedReferenceExtensions.has(item.name.split(".").pop().toLowerCase()));
+    if (unsupported) {
+      referenceInput.value = "";
+      $("#reference-files-detail").textContent = `Unsupported file format: ${unsupported.name}`;
+      return toast(`Unsupported lecturer file format: ${unsupported.name}`);
+    }
     if (files.length > maxReferenceFiles) {
       referenceInput.value = "";
       $("#reference-files-detail").textContent = `Choose at most ${maxReferenceFiles} files.`;
@@ -1057,14 +1128,72 @@ function viewDashboard() {
       : "PDF, DOCX, PPTX, TXT or Markdown · Up to 5 files";
   };
 
+  const selectedDocumentFiles = () => Array.from(documentInput.files || []);
+  const allowedDocumentExtensions = new Set(["pdf", "docx", "pptx", "txt", "md"]);
+  $("#choose-documents").onclick = () => documentInput.click();
+  documentInput.onchange = () => {
+    const files = selectedDocumentFiles();
+    if (files.length > maxDocumentFiles) {
+      documentInput.value = "";
+      $("#document-files-detail").textContent = `Choose at most ${maxDocumentFiles} documents.`;
+      documentPickedCard.hidden = true;
+      return toast(`Choose no more than ${maxDocumentFiles} documents.`);
+    }
+    const unsupported = files.find((item) => !allowedDocumentExtensions.has(item.name.split(".").pop().toLowerCase()));
+    if (unsupported) {
+      documentInput.value = "";
+      documentPickedCard.hidden = true;
+      return toast(`Unsupported file format: ${unsupported.name}`);
+    }
+    const tooLarge = files.find((item) => item.size > maxDocumentMB * 1048576);
+    if (tooLarge) {
+      documentInput.value = "";
+      documentPickedCard.hidden = true;
+      return toast(`"${tooLarge.name}" is larger than ${maxDocumentMB} MB.`);
+    }
+    const totalSize = files.reduce((total, item) => total + item.size, 0);
+    if (totalSize > maxMB * 1048576) {
+      documentInput.value = "";
+      documentPickedCard.hidden = true;
+      return toast(`The combined document upload must stay under ${maxMB} MB.`);
+    }
+    if (!files.length) {
+      documentPickedCard.hidden = true;
+      return;
+    }
+    $("#document-fname").textContent = files.length === 1 ? files[0].name : `${files.length} documents selected`;
+    $("#document-file-detail").textContent = `${(totalSize / 1048576).toFixed(1)} MB total · ${files.map((item) => item.name).join(", ")}`;
+    documentPickedCard.hidden = false;
+    documentPickedCard.scrollIntoView({ behavior: "auto", block: "nearest" });
+  };
+  $("#cancel-documents").onclick = () => {
+    documentInput.value = "";
+    documentPickedCard.hidden = true;
+  };
+  $("#process-documents").onclick = () => {
+    const files = selectedDocumentFiles();
+    if (!files.length) return toast("Choose at least one document first.");
+    const fd = new FormData();
+    files.forEach((item) => fd.append("files", item));
+    track(fetch(API + "/api/lectures/documents", {
+      method: "POST",
+      body: fd,
+      credentials: "include",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}
+    }));
+  };
+
   let maxMB = 200;
   api("/health").then((h) => {
     maxMB = h.max_upload_mb || maxMB;
     maxReferenceMB = h.max_reference_file_mb || maxReferenceMB;
     maxReferenceFiles = h.max_reference_files || maxReferenceFiles;
+    maxDocumentMB = h.max_document_file_mb || maxDocumentMB;
+    maxDocumentFiles = h.max_document_files || maxDocumentFiles;
     const yt = h.youtube_enabled !== false || h.youtube_captions_enabled === true;
     $("#youtube-toggle").hidden = !yt;
     $("#reference-files-detail").textContent = `PDF, DOCX, PPTX, TXT or Markdown · Up to ${maxReferenceFiles} files, ${maxReferenceMB} MB each`;
+    $("#document-files-detail").textContent = `PDF, DOCX, PPTX, TXT or Markdown · Up to ${maxDocumentFiles} files, ${maxDocumentMB} MB each`;
     $("#hint").textContent = h.youtube_enabled === false && h.youtube_captions_enabled === true
       ? "Audio/video uploads or YouTube links with English captions."
       : yt ? "Audio, video, or YouTube link." : "Audio and video files supported.";
@@ -1115,7 +1244,11 @@ async function track(request) {
   $("#stage").className = "";
   $("#stage").textContent = "Uploading...";
   $("#barfill").style.width = "3%";
-  const btns = document.querySelectorAll("#picked-card .btn, #ytb, #choose-file, #choose-reference-files");
+  const progressBar = $("#prog .bar");
+  progressBar?.setAttribute("aria-valuenow", "3");
+  const uploadArea = $(".study-upload-area");
+  uploadArea?.setAttribute("aria-busy", "true");
+  const btns = document.querySelectorAll("#picked-card .btn, #cancel-file, #ytb, #youtube-toggle, #choose-file, #choose-reference-files, #choose-documents, #process-documents, #cancel-documents");
   btns.forEach((b) => (b.disabled = true));
   let finished = false;
   try {
@@ -1138,12 +1271,14 @@ async function track(request) {
         const j = JSON.parse(ln);
         if (!$("#stage")) return; // user left the page; the server keeps going
         $("#stage").textContent = j.status === "queued" ? "Waiting for the server to start..." : `${j.stage} · step ${j.step} of ${j.total}`;
-        $("#barfill").style.width = (j.step / j.total) * 100 + "%";
+        const percent = j.status === "done" ? 100 : Math.max(0, Math.min(100, (Number(j.step) / Math.max(1, Number(j.total))) * 100));
+        $("#barfill").style.width = percent + "%";
+        progressBar?.setAttribute("aria-valuenow", String(Math.round(percent)));
         if (j.status === "error") throw new Error(j.error);
         if (j.status === "done") {
           finished = true;
           const warnings = Array.isArray(j.warnings) ? j.warnings : [];
-          toast(warnings.length ? `Workspace ready. ${warnings.length} lecturer-file warning${warnings.length === 1 ? "" : "s"}: ${String(warnings[0]).slice(0, 110)}` : "Workspace ready");
+          toast(warnings.length ? `Workspace ready with ${warnings.length} processing warning${warnings.length === 1 ? "" : "s"}: ${String(warnings[0]).slice(0, 110)}` : "Workspace ready");
           location.hash = "#/workspace/" + j.lecture_id;
           return;
         }
@@ -1154,6 +1289,7 @@ async function track(request) {
     if ($("#stage")) { $("#stage").textContent = e.message; $("#stage").className = "err"; }
   } finally {
     btns.forEach((b) => (b.disabled = false));
+    uploadArea?.setAttribute("aria-busy", "false");
   }
 }
 
@@ -1226,25 +1362,46 @@ function viewWorkspace() {
       </div>
       <a class="workspace-back" href="#/lectures">${ico("library")} <span>All lectures</span></a>
     </div>
-    <div class="tabs workspace-tabs" role="tablist" aria-label="Study tools">${Object.keys(tabs).map((t) => `<button role="tab" aria-selected="false" data-tab="${t}"><span class="workspace-tab-icon">${ico(tabIcons[t])}</span><span>${t === "Evaluation" ? "Answer evaluation" : t}</span></button>`).join("")}</div>
-    <div id="tab" class="workspace-tab-panel"></div>`;
+    <div class="tabs workspace-tabs" role="tablist" aria-label="Study tools">${Object.keys(tabs).map((t) => { const tabId = `workspace-tab-${t.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`; return `<button id="${tabId}" role="tab" aria-controls="tab" aria-selected="false" tabindex="-1" data-tab="${t}"><span class="workspace-tab-icon">${ico(tabIcons[t])}</span><span>${t === "Evaluation" ? "Answer evaluation" : t}</span></button>`; }).join("")}</div>
+    <div id="tab" class="workspace-tab-panel" role="tabpanel" tabindex="0"></div>`;
   const panel = $("#tab");
   let tabSeq = 0;
   const show = (t) => {
     const token = ++tabSeq;
-    document.querySelectorAll(".workspace-tabs button").forEach((b) => {
+    const tabButtons = Array.from(document.querySelectorAll(".workspace-tabs button"));
+    tabButtons.forEach((b) => {
       const active = b.dataset.tab === t;
       b.classList.toggle("on", active);
       b.setAttribute("aria-selected", active ? "true" : "false");
+      b.tabIndex = active ? 0 : -1;
     });
+    const activeButton = tabButtons.find((b) => b.dataset.tab === t);
+    if (activeButton) panel.setAttribute("aria-labelledby", activeButton.id);
     // Tabs call alive() after any await; it is false once the user switched tab or left the page.
     const alive = () => token === tabSeq && panel.isConnected;
     tabs[t](panel, alive);
   };
-  document.querySelector(".workspace-tabs").onclick = (e) => {
+  const tabList = document.querySelector(".workspace-tabs");
+  tabList.onclick = (e) => {
     const button = e.target.closest("[data-tab]");
     if (button) show(button.dataset.tab);
   };
+  tabList.addEventListener("keydown", (event) => {
+    const currentButton = event.target.closest("[data-tab]");
+    if (!currentButton) return;
+    const tabButtons = Array.from(tabList.querySelectorAll("[data-tab]"));
+    const currentIndex = tabButtons.indexOf(currentButton);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabButtons.length;
+    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabButtons.length) % tabButtons.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabButtons.length - 1;
+    else return;
+    event.preventDefault();
+    const nextButton = tabButtons[nextIndex];
+    show(nextButton.dataset.tab);
+    nextButton.focus();
+  });
   const initialTab = pendingWorkspaceTab || "Chat";
   pendingWorkspaceTab = null;
   show(initialTab);
@@ -1301,7 +1458,24 @@ const messageContentHtml = (m) => m.text ? renderRichText(m.text) : (m.status ==
 const messageSourcesHtml = (m) => appSettings.showSources && m.sources?.length ? `
   <details class="source-panel">
     <summary><span class="source-summary-icon">${ico("book-open")}</span><span><strong>Sources from your lecture</strong><small>${m.sources.length} supporting passage${m.sources.length === 1 ? "" : "s"}</small></span><span class="source-chevron">${ico("chevron-down")}</span></summary>
-    <div class="source-list">${m.sources.map((source, sourceIndex) => `<article class="source-item"><div class="source-item-head"><span>PASSAGE ${String(sourceIndex + 1).padStart(2, "0")}</span>${source.time ? `<b>${ico("clock")} ${esc(source.time)}</b>` : ""}</div><p>${esc(source.text)}</p></article>`).join("")}</div>
+    <div class="source-list">${m.sources.map((source, sourceIndex) => {
+      const sourceType = source.source_type === "lecturer_material"
+        ? "LECTURER MATERIAL"
+        : source.source_type === "lecture_transcript" ? "LECTURE TRANSCRIPT" : "SOURCE PASSAGE";
+      const filename = source.filename || source.source || "";
+      const location = [
+        filename,
+        source.page_number != null ? `Page ${source.page_number}` : "",
+        source.slide_number != null ? `Slide ${source.slide_number}` : "",
+        source.chunk_id != null ? `Chunk ${source.chunk_id}` : ""
+      ].filter(Boolean).join(" · ");
+      return `<article class="source-item">
+        <div class="source-item-head"><span>PASSAGE ${String(sourceIndex + 1).padStart(2, "0")} · ${sourceType}</span>${source.time ? `<b>${ico("clock")} ${esc(source.time)}</b>` : ""}</div>
+        ${location ? `<div class="source-item-provenance">${esc(location)}</div>` : ""}
+        <p>${esc(source.text)}</p>
+        <div class="source-item-actions"><button type="button" class="source-copy-button" data-copy-source="${sourceIndex}">${ico("clipboard-check")} Copy passage</button></div>
+      </article>`;
+    }).join("")}</div>
   </details>` : "";
 const messageErrorHtml = (m, index, canRetry) => {
   if (m.role !== "ai" || (m.status !== "error" && m.status !== "stopped")) return "";
@@ -1410,7 +1584,7 @@ function tabChat(el) {
       <form id="ask" class="ask polished-composer">
         <div class="composer-box">
           <textarea id="q" rows="1" placeholder="Ask anything about this lecture…" autocomplete="off" maxlength="2000" aria-label="Your question"></textarea>
-          <div class="composer-footer"><span>Lecture grounded</span><div class="composer-actions"><button type="button" class="ghost stop-message" id="stopAnswer" hidden>Stop</button><button class="btn send-message" id="sendQuestion" type="submit" aria-label="Send message">${ico("arrow-up-right")}</button></div></div>
+          <div class="composer-footer"><span>Lecture grounded</span><span class="question-counter" id="questionCounter" aria-live="off">0 / 2000</span><div class="composer-actions"><button type="button" class="ghost stop-message" id="stopAnswer" hidden>Stop</button><button class="btn send-message" id="sendQuestion" type="submit" aria-label="Send message">${ico("arrow-up-right")}</button></div></div>
         </div>
         <button type="button" id="reset" class="new-chat-button">${ico("plus")} <span>New chat</span></button>
       </form>
@@ -1497,7 +1671,12 @@ function tabChat(el) {
 
   const resize = () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 150)}px`; };
   if (pendingChatPrompt) { input.value = pendingChatPrompt; pendingChatPrompt = null; resize(); }
-  input.addEventListener("input", resize);
+  const updateQuestionCounter = () => {
+    const counter = el.querySelector("#questionCounter");
+    if (counter) counter.textContent = `${input.value.length} / 2000`;
+  };
+  input.addEventListener("input", () => { resize(); updateQuestionCounter(); });
+  updateQuestionCounter();
 
   const touchDevice = window.matchMedia("(pointer: coarse)").matches;
   input.addEventListener("keydown", (event) => {
@@ -1512,6 +1691,14 @@ function tabChat(el) {
 
   // One delegated handler for everything clickable inside the log.
   box.addEventListener("click", (event) => {
+    const sourceCopy = event.target.closest("[data-copy-source]");
+    if (sourceCopy) {
+      const article = sourceCopy.closest("article[data-i]");
+      const message = article ? log[Number(article.dataset.i)] : null;
+      const source = message?.sources?.[Number(sourceCopy.dataset.copySource)];
+      if (source?.text) copyText(source.text, "Source passage copied");
+      return;
+    }
     const copy = event.target.closest("[data-copy-answer]");
     if (copy) { copyText(log[Number(copy.dataset.copyAnswer)]?.text || "", "Answer copied"); return; }
     const retry = event.target.closest("[data-retry]");
@@ -1549,6 +1736,7 @@ function tabChat(el) {
     if (!q) return;
     input.value = "";
     input.style.height = "auto";
+    updateQuestionCounter();
     const previousLast = log.length - 1;
     const userMsg = { role: "you", text: q };
     const answer = { role: "ai", text: "", sources: [], question: q, status: "streaming" };

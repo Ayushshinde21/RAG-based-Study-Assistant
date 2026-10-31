@@ -150,9 +150,11 @@ def _save_registry(lectures: list[dict]):
 
 def register_lecture(title: str, collection_name: str, num_chunks: int,
                       transcript_path: str | None = None,
-                      owner_user_id: int | None = None) -> str:
-    """Add a newly processed lecture to the registry. Returns its lecture_id."""
-    lecture_id = collection_name  # collection_name is already unique per lecture
+                      owner_user_id: int | None = None,
+                      content_type: str = "lecture",
+                      source_files: list[str] | None = None) -> str:
+    """Register a searchable workspace while retaining its source-file details."""
+    lecture_id = collection_name  # collection_name is already unique per workspace
     lectures = _load_registry()
     lectures.append({
         "id": lecture_id,
@@ -161,6 +163,8 @@ def register_lecture(title: str, collection_name: str, num_chunks: int,
         "num_chunks": num_chunks,
         "transcript_path": transcript_path,
         "owner_user_id": owner_user_id,
+        "content_type": content_type,
+        "source_files": list(source_files or []),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
     _save_registry(lectures)

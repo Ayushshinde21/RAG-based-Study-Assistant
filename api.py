@@ -9,6 +9,7 @@ API docs:      http://127.0.0.1:8000/docs
 """
 import gc
 import json
+import logging
 import os
 import re
 import tempfile
@@ -24,11 +25,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import auth_store
 
@@ -38,6 +39,9 @@ REFERENCE_EXTENSIONS = {"pdf", "docx", "pptx", "txt", "md"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
 MAX_REFERENCE_FILE_MB = int(os.getenv("MAX_REFERENCE_FILE_MB", "15"))
 MAX_REFERENCE_FILES = 5
+MAX_DOCUMENT_FILES = int(os.getenv("MAX_DOCUMENT_FILES", "5"))
+MAX_DOCUMENT_FILE_MB = int(os.getenv("MAX_DOCUMENT_FILE_MB", str(MAX_REFERENCE_FILE_MB)))
+MAX_DOCUMENT_TEXT_CHARS = int(os.getenv("MAX_DOCUMENT_TEXT_CHARS", "250000"))
 MAX_REFERENCE_TEXT_CHARS = 250_000
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
 TITLES_PATH = "lecture_titles.json"
@@ -69,11 +73,115 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 SESSION_COOKIE = "campus_session"
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 LOGIN_RATE_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT = 12
+MAX_TRACKED_AUTH_CLIENTS = 10_000
+LOGIN_ATTEMPT_LOCK = threading.Lock()
+MODEL_REQUESTS: dict[int, list[float]] = {}
+MODEL_REQUEST_WINDOW_SECONDS = max(10, int(os.getenv("MODEL_REQUEST_WINDOW_SECONDS", "60")))
+MODEL_REQUEST_RATE_LIMIT = max(1, int(os.getenv("MODEL_REQUEST_RATE_LIMIT", "30")))
+MAX_TRACKED_MODEL_USERS = 10_000
+MODEL_REQUEST_LOCK = threading.Lock()
+LOGGER = logging.getLogger("campus_study_desk")
+
+MAX_ACTIVE_JOBS_PER_USER = max(1, int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", "2")))
+MAX_ACTIVE_JOBS_TOTAL = max(1, int(os.getenv("MAX_ACTIVE_JOBS_TOTAL", "12")))
+MAX_RETAINED_JOBS = max(20, int(os.getenv("MAX_RETAINED_JOBS", "500")))
+JOB_RETENTION_SECONDS = max(3600, int(os.getenv("JOB_RETENTION_SECONDS", "86400")))
+JOB_LOCK = threading.RLock()
+
+
+def validate_session_cookie_security(app_environment: str, secure_cookie: bool) -> None:
+    """Fail closed if a production deployment would issue non-Secure cookies."""
+    if app_environment in {"prod", "production"} and not secure_cookie:
+        raise RuntimeError(
+            "SESSION_COOKIE_SECURE=1 is required when APP_ENV is production."
+        )
+
+
+validate_session_cookie_security(APP_ENV, SESSION_COOKIE_SECURE)
+
+
+def allow_auth_attempt(client_id: str, now: float | None = None) -> bool:
+    """Bounded per-process auth throttle; use shared storage for multi-instance deployments."""
+    current = time.time() if now is None else now
+    key = (client_id or "unknown")[:128]
+    cutoff = current - LOGIN_RATE_WINDOW_SECONDS
+    with LOGIN_ATTEMPT_LOCK:
+        for known_key, timestamps in list(LOGIN_ATTEMPTS.items()):
+            active = [stamp for stamp in timestamps if stamp > cutoff]
+            if active:
+                LOGIN_ATTEMPTS[known_key] = active
+            else:
+                LOGIN_ATTEMPTS.pop(known_key, None)
+
+        attempts = LOGIN_ATTEMPTS.get(key, [])
+        if len(attempts) >= LOGIN_RATE_LIMIT:
+            return False
+        attempts.append(current)
+        LOGIN_ATTEMPTS[key] = attempts
+
+        if len(LOGIN_ATTEMPTS) > MAX_TRACKED_AUTH_CLIENTS:
+            oldest_keys = sorted(
+                LOGIN_ATTEMPTS,
+                key=lambda item: LOGIN_ATTEMPTS[item][-1] if LOGIN_ATTEMPTS[item] else 0,
+            )
+            for old_key in oldest_keys[: len(LOGIN_ATTEMPTS) - MAX_TRACKED_AUTH_CLIENTS]:
+                LOGIN_ATTEMPTS.pop(old_key, None)
+    return True
+
+
+def clear_auth_attempts(client_id: str) -> None:
+    key = (client_id or "unknown")[:128]
+    with LOGIN_ATTEMPT_LOCK:
+        LOGIN_ATTEMPTS.pop(key, None)
+
+
+def enforce_model_request_limit(user_id: int, now: float | None = None) -> None:
+    """Bound model-backed requests per authenticated user within this process."""
+    current = time.time() if now is None else now
+    cutoff = current - MODEL_REQUEST_WINDOW_SECONDS
+    user_key = int(user_id)
+    with MODEL_REQUEST_LOCK:
+        for known_user, timestamps in list(MODEL_REQUESTS.items()):
+            active = [stamp for stamp in timestamps if stamp > cutoff]
+            if active:
+                MODEL_REQUESTS[known_user] = active
+            else:
+                MODEL_REQUESTS.pop(known_user, None)
+
+        attempts = MODEL_REQUESTS.get(user_key, [])
+        if len(attempts) >= MODEL_REQUEST_RATE_LIMIT:
+            raise HTTPException(
+                429,
+                "You've reached the AI request limit. Wait a moment before trying again.",
+            )
+        attempts.append(current)
+        MODEL_REQUESTS[user_key] = attempts
+
+        if len(MODEL_REQUESTS) > MAX_TRACKED_MODEL_USERS:
+            oldest_users = sorted(
+                MODEL_REQUESTS,
+                key=lambda item: MODEL_REQUESTS[item][-1] if MODEL_REQUESTS[item] else 0,
+            )
+            for old_user in oldest_users[: len(MODEL_REQUESTS) - MAX_TRACKED_MODEL_USERS]:
+                MODEL_REQUESTS.pop(old_user, None)
 
 
 def current_user(request: Request) -> dict:
@@ -148,12 +256,13 @@ def require_lecture_access(lecture_id: str, user: dict) -> dict:
 # ── In-memory state (replaces st.session_state) ──────────────────────────────
 JOBS: dict[str, dict] = {}                 # job_id -> progress of a processing run
 RUNTIME: dict[str, dict] = {}              # lecture_id -> {docs, dense, bm25} (shared retrievers)
-ENGINES: dict[tuple, object] = {}          # (lecture_id, session_id) -> RAGEngine (own chat memory)
+ENGINES: dict[tuple, object] = {}          # (lecture_id, user_id, session_id) -> isolated RAGEngine
 SUMMARIES: dict[str, str] = {}
 DETAILED_NOTES: dict[str, str] = {}
 PROCESS_LOCK = threading.Semaphore(1)      # one heavy pipeline at a time (protects RAM)
 LOAD_LOCK = threading.Lock()
 TITLE_LOCK = threading.Lock()
+ENGINE_LOCK = threading.RLock()
 MAX_ENGINES = 200
 
 
@@ -167,15 +276,35 @@ def redact(text) -> str:
 
 
 def friendly_error(exc: Exception) -> str:
+    """Return a safe user-facing message without exposing paths, prompts, or provider details."""
     msg = redact(exc)
     low = msg.lower()
+
     if "403" in msg or "forbidden" in low:
         return "The download was refused (HTTP 403). Try another video, or upload the recording as a file."
     if "api key" in low or "api_key" in low or "401" in msg or "unauthorized" in low:
         return "The AI service rejected the request. Check the API keys on the server."
     if "rate limit" in low or "429" in msg or "quota" in low:
         return "The AI service rate limit was reached. Please wait a moment and try again."
-    return msg or exc.__class__.__name__
+    if "ffmpeg" in low:
+        return "Audio processing could not start. Verify that FFmpeg is installed and available on the server."
+    if "no audio could be extracted" in low:
+        return "No audio could be extracted from this recording. Try another file or format."
+    if "nearly empty" in low or "recording may be silent" in low or "transcription came back empty" in low:
+        return "No usable speech was detected. Check that the recording contains clear audio and try again."
+    if "ocr is required" in low or "scanned or image-only" in low:
+        return "This PDF contains no selectable text. OCR is required before it can be indexed."
+    if "no documents could be indexed" in low:
+        return "No documents could be indexed. Check that the uploaded files contain readable text."
+    if "no readable text" in low or "no readable document text" in low or "no searchable chunks" in low:
+        return "No readable document text was found. Check the file and try again."
+    if "unsupported document format" in low or "unsupported file type" in low:
+        return "This document format is not supported. Upload a PDF, DOCX, PPTX, TXT, or Markdown file."
+    if "youtube audio downloading is disabled" in low:
+        return "This server cannot download YouTube audio. Try a video with captions or upload the recording."
+
+    LOGGER.warning("Suppressed internal error details (%s)", exc.__class__.__name__)
+    return "An unexpected processing error occurred. Please try again. If it continues, contact support."
 
 
 def valid_youtube_url(url: str) -> bool:
@@ -242,17 +371,19 @@ def get_runtime(lecture_id: str) -> dict:
     return rt
 
 
-def get_engine(lecture_id: str, session_id: str):
-    key = (lecture_id, session_id)
-    eng = ENGINES.get(key)
-    if eng is None:
-        from core.rag_engine import RAGEngine
-        rt = get_runtime(lecture_id)
-        eng = RAGEngine(rt["dense"], rt["bm25"])
-        if len(ENGINES) >= MAX_ENGINES:
-            ENGINES.pop(next(iter(ENGINES)))
-        ENGINES[key] = eng
-    return eng
+def get_engine(lecture_id: str, session_id: str, user_id: int):
+    """Return a chat engine isolated to one authenticated user and session."""
+    key = (str(lecture_id), int(user_id), session_id)
+    with ENGINE_LOCK:
+        eng = ENGINES.get(key)
+        if eng is None:
+            from core.rag_engine import RAGEngine
+            rt = get_runtime(lecture_id)
+            eng = RAGEngine(rt["dense"], rt["bm25"])
+            if len(ENGINES) >= MAX_ENGINES:
+                ENGINES.pop(next(iter(ENGINES)))
+            ENGINES[key] = eng
+        return eng
 
 
 # ── Processing pipeline (process_uploaded_file from app.py, minus Streamlit) ─
@@ -264,7 +395,23 @@ def set_step(job: dict, i: int):
     job["step"], job["stage"] = i + 1, STEPS[i]
 
 
-def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, reference_files: list[dict] | None = None):
+def finish_job(job_id: str, **updates) -> None:
+    """Publish a terminal job state atomically for pollers and queue accounting."""
+    with JOB_LOCK:
+        job = JOBS.get(job_id)
+        if job is not None:
+            job.update(updates)
+            job["finished_at"] = time.time()
+
+
+def run_job(
+    job_id: str,
+    source: str,
+    is_url: bool,
+    owner_user_id: int,
+    reference_files: list[dict] | None = None,
+    display_title: str | None = None,
+):
     job = JOBS[job_id]
     reference_files = reference_files or []
     job.setdefault("warnings", [])
@@ -380,20 +527,25 @@ def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, referenc
             import core.reranker  # noqa: F401  (import loads the model)
 
             set_step(job, 5)
-            title = video_title or os.path.splitext(os.path.basename(audio_path))[0]
+            fallback_source = audio_path or source
+            title = video_title or display_title or os.path.splitext(os.path.basename(fallback_source))[0]
             lecture_id = register_lecture(title=title, collection_name=collection,
                                           num_chunks=len(docs), transcript_path=transcript_path,
                                           owner_user_id=owner_user_id)
             RUNTIME[lecture_id] = {"docs": docs, "dense": dense, "bm25": bm25}
 
-        job.update(status="done", lecture_id=lecture_id, stage="Workspace ready")
+        finish_job(job_id, status="done", lecture_id=lecture_id, stage="Workspace ready")
     except Exception as e:
         if lecture_id is None and vector_store is not None:
             try:
                 vector_store.delete_collection()
             except Exception:
                 pass
-        job.update(status="error", error=f"Processing failed during {job.get('stage', 'startup')}. {friendly_error(e)}")
+        finish_job(
+            job_id,
+            status="error",
+            error=f"Processing failed during {job.get('stage', 'startup')}. {friendly_error(e)}",
+        )
     finally:
         paths_to_remove = {source if not is_url else None, audio_path}
         paths_to_remove.update(item.get("path") for item in reference_files)
@@ -405,19 +557,283 @@ def run_job(job_id: str, source: str, is_url: bool, owner_user_id: int, referenc
                     pass
 
 
-def new_job() -> str:
-    job_id = uuid.uuid4().hex[:12]
-    JOBS[job_id] = {"status": "queued", "stage": "Waiting to start", "step": 0,
-                    "total": len(STEPS), "lecture_id": None, "error": None, "warnings": []}
-    return job_id
+def run_document_job(job_id: str, uploaded_files: list[dict], owner_user_id: int):
+    """Build a searchable study workspace directly from uploaded documents."""
+    job = JOBS[job_id]
+    job.update(status="queued", step=0, total=4, stage="Waiting to start")
+    vector_store = None
+    lecture_id = None
+    collection_name = None
+    uploaded_files = uploaded_files or []
+
+    try:
+        with PROCESS_LOCK:
+            job.update(status="running", step=1, stage="Extracting documents")
+            from core.chunker import chunk_text
+
+            all_docs = []
+            indexed_filenames = []
+            batch_id = uuid.uuid4().hex[:12]
+
+            for index, item in enumerate(uploaded_files, start=1):
+                filename = item["filename"]
+                try:
+                    job.update(
+                        step=1,
+                        stage=f"Extracting document {index} of {len(uploaded_files)}: {filename}",
+                    )
+                    text = extract_reference_text(item["path"], filename)
+                    if len(text) > MAX_DOCUMENT_TEXT_CHARS:
+                        text = text[:MAX_DOCUMENT_TEXT_CHARS]
+                        job["warnings"].append(
+                            f"{filename}: only the first {MAX_DOCUMENT_TEXT_CHARS:,} characters were indexed."
+                        )
+
+                    job.update(
+                        step=2,
+                        stage=f"Cleaning and chunking document {index} of {len(uploaded_files)}",
+                    )
+                    chunks = chunk_text(text, source=filename, method="fixed")
+                    if not chunks:
+                        raise RuntimeError("No searchable chunks were created.")
+
+                    document_id = uuid.uuid4().hex[:12]
+                    extension = os.path.splitext(filename)[1].lower().lstrip(".")
+                    for chunk_index, doc in enumerate(chunks):
+                        doc.metadata.update({
+                            "source_type": "uploaded_document",
+                            "filename": filename,
+                            "document_type": extension,
+                            "document_id": document_id,
+                            "document_chunk": chunk_index,
+                            "ingestion_batch_id": batch_id,
+                        })
+                    all_docs.extend(chunks)
+                    indexed_filenames.append(filename)
+                except Exception as exc:
+                    warning = f"Could not index {filename}: {friendly_error(exc)}"
+                    job["warnings"].append(warning)
+                    print(f"[job {job_id}] {warning}")
+
+            if not all_docs:
+                details = " ".join(job.get("warnings", []))
+                raise RuntimeError(
+                    "No documents could be indexed. " + details
+                    if details else "No readable document content was found."
+                )
+
+            job.update(step=3, stage="Building the searchable document index")
+            from core.vector_store import (
+                build_vector_store,
+                delete_collection,
+                get_dense_retriever,
+                new_collection_name,
+                register_lecture,
+            )
+            from core.bm25_index import build_bm25_retriever
+
+            collection_name = new_collection_name()
+            vector_store = build_vector_store(
+                all_docs,
+                reset=True,
+                collection_name=collection_name,
+            )
+            dense = get_dense_retriever(vector_store, k=10)
+            bm25 = build_bm25_retriever(all_docs, k=10)
+
+            job.update(step=4, stage="Saving the document study workspace")
+            stems = [os.path.splitext(name)[0] for name in indexed_filenames]
+            if len(stems) == 1:
+                title = stems[0]
+            else:
+                preview = ", ".join(stems[:2])
+                suffix = f" + {len(stems) - 2} more" if len(stems) > 2 else ""
+                title = f"{len(stems)} documents: {preview}{suffix}"
+            title = title[:200] or "Uploaded documents"
+
+            lecture_id = register_lecture(
+                title=title,
+                collection_name=collection_name,
+                num_chunks=len(all_docs),
+                transcript_path=None,
+                owner_user_id=owner_user_id,
+                content_type="documents",
+                source_files=indexed_filenames,
+            )
+            RUNTIME[lecture_id] = {
+                "docs": all_docs,
+                "dense": dense,
+                "bm25": bm25,
+            }
+
+        finish_job(
+            job_id,
+            status="done",
+            lecture_id=lecture_id,
+            stage="Document workspace ready",
+            indexed_files=indexed_filenames,
+            num_chunks=len(all_docs),
+        )
+    except Exception as exc:
+        if collection_name and lecture_id is None:
+            try:
+                if vector_store is not None:
+                    vector_store.delete_collection()
+                else:
+                    delete_collection(collection_name)
+            except Exception:
+                pass
+            RUNTIME.pop(collection_name, None)
+        finish_job(
+            job_id,
+            status="error",
+            error=f"Document processing failed during {job.get('stage', 'startup')}. {friendly_error(exc)}",
+        )
+    finally:
+        for item in uploaded_files:
+            path = item.get("path")
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
-def start_job(source: str, is_url: bool, owner_user_id: int, reference_files: list[dict] | None = None):
-    job_id = new_job()
-    JOBS[job_id]["owner_user_id"] = owner_user_id
-    thread = threading.Thread(target=run_job, args=(job_id, source, is_url, owner_user_id, reference_files), daemon=True)
-    thread.start()
+def _prune_jobs_locked(now: float) -> None:
+    """Remove expired completed jobs and keep the in-memory job registry bounded."""
+    terminal = {"done", "error"}
+    for job_id, job in list(JOBS.items()):
+        if job.get("status") not in terminal:
+            continue
+        finished = float(job.get("finished_at", job.get("created_at", now)))
+        if now - finished >= JOB_RETENTION_SECONDS:
+            JOBS.pop(job_id, None)
+
+    if len(JOBS) >= MAX_RETAINED_JOBS:
+        completed = sorted(
+            (
+                (float(job.get("finished_at", job.get("created_at", now))), job_id)
+                for job_id, job in JOBS.items()
+                if job.get("status") in terminal
+            ),
+            key=lambda item: item[0],
+        )
+        while len(JOBS) >= MAX_RETAINED_JOBS and completed:
+            _, old_job_id = completed.pop(0)
+            JOBS.pop(old_job_id, None)
+
+
+def new_job(owner_user_id: int | None = None) -> str:
+    now = time.time()
+    with JOB_LOCK:
+        _prune_jobs_locked(now)
+        active_jobs = [
+            job for job in JOBS.values()
+            if job.get("status") in {"queued", "running"}
+        ]
+        if len(active_jobs) >= MAX_ACTIVE_JOBS_TOTAL:
+            raise HTTPException(429, "The processing queue is full. Wait for a current job to finish and try again.")
+        if owner_user_id is not None:
+            user_active = sum(
+                1 for job in active_jobs
+                if job.get("owner_user_id") == owner_user_id
+            )
+            if user_active >= MAX_ACTIVE_JOBS_PER_USER:
+                raise HTTPException(429, "You already have the maximum number of active processing jobs. Wait for one to finish.")
+        if len(JOBS) >= MAX_RETAINED_JOBS:
+            raise HTTPException(503, "The job registry is temporarily full. Try again after existing jobs finish.")
+
+        job_id = uuid.uuid4().hex[:12]
+        JOBS[job_id] = {
+            "status": "queued",
+            "stage": "Waiting to start",
+            "step": 0,
+            "total": len(STEPS),
+            "lecture_id": None,
+            "error": None,
+            "warnings": [],
+            "owner_user_id": owner_user_id,
+            "created_at": now,
+        }
+        return job_id
+
+
+def _remove_temporary_uploads(items: list[dict] | None) -> None:
+    for item in items or []:
+        path = item.get("path")
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def start_document_job(uploaded_files: list[dict], owner_user_id: int):
+    try:
+        job_id = new_job(owner_user_id)
+    except Exception:
+        _remove_temporary_uploads(uploaded_files)
+        raise
+    with JOB_LOCK:
+        JOBS[job_id]["total"] = 4
+    thread = threading.Thread(
+        target=run_document_job,
+        args=(job_id, uploaded_files, owner_user_id),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with JOB_LOCK:
+            JOBS.pop(job_id, None)
+        _remove_temporary_uploads(uploaded_files)
+        raise
     return job_id, thread
+
+
+def start_job(
+    source: str,
+    is_url: bool,
+    owner_user_id: int,
+    reference_files: list[dict] | None = None,
+    display_title: str | None = None,
+):
+    try:
+        job_id = new_job(owner_user_id)
+    except Exception:
+        _remove_temporary_uploads(reference_files)
+        if not is_url and source and os.path.exists(source):
+            try:
+                os.remove(source)
+            except OSError:
+                pass
+        raise
+    thread = threading.Thread(
+        target=run_job,
+        args=(job_id, source, is_url, owner_user_id, reference_files, display_title),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with JOB_LOCK:
+            JOBS.pop(job_id, None)
+        _remove_temporary_uploads(reference_files)
+        if not is_url and source and os.path.exists(source):
+            try:
+                os.remove(source)
+            except OSError:
+                pass
+        raise
+    return job_id, thread
+
+
+def uploaded_lecture_title(filename: str | None) -> str:
+    """Return a safe display title from the original uploaded filename."""
+    supplied = (filename or "").replace("\\", "/")
+    basename = os.path.basename(supplied)
+    title = os.path.splitext(basename)[0].strip()
+    return title or "Uploaded lecture"
 
 
 def job_events(job_id: str, thread: threading.Thread):
@@ -428,8 +844,19 @@ def job_events(job_id: str, thread: threading.Thread):
     """
     last, last_beat = None, time.time()
     while True:
-        job = dict(JOBS[job_id])
+        with JOB_LOCK:
+            job = dict(JOBS[job_id])
         alive = thread.is_alive()
+        if not alive and job.get("status") not in {"done", "error"}:
+            with JOB_LOCK:
+                current = JOBS.get(job_id)
+                if current and current.get("status") not in {"done", "error"}:
+                    current.update(
+                        status="error",
+                        error="Processing stopped unexpectedly. Please retry the upload.",
+                        finished_at=time.time(),
+                    )
+                job = dict(JOBS.get(job_id) or job)
         snap = {k: job.get(k) for k in ("status", "stage", "step", "total", "lecture_id", "error", "warnings")}
         if snap != last:
             yield json.dumps(snap) + "\n"
@@ -437,10 +864,7 @@ def job_events(job_id: str, thread: threading.Thread):
         elif time.time() - last_beat > 10:
             yield "\n"  # heartbeat so proxies keep the connection open
             last_beat = time.time()
-        if job["status"] in ("done", "error"):
-            break
-        if not alive:
-            yield json.dumps({**snap, "status": "error", "error": "Processing stopped unexpectedly."}) + "\n"
+        if job.get("status") in ("done", "error"):
             break
         time.sleep(1)
 
@@ -461,13 +885,8 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/register")
 def register(req: RegisterRequest, response: Response, request: Request):
     client = request.client.host if request.client else "unknown"
-    now = time.time()
-    attempts = [t for t in LOGIN_ATTEMPTS.get(client, []) if now - t < LOGIN_RATE_WINDOW_SECONDS]
-    LOGIN_ATTEMPTS[client] = attempts
-    if len(attempts) >= LOGIN_RATE_LIMIT:
+    if not allow_auth_attempt(client):
         raise HTTPException(429, "Too many authentication attempts. Try again in a few minutes.")
-    attempts.append(now)
-    LOGIN_ATTEMPTS[client] = attempts
     try:
         user = auth_store.create_user(req.email, req.display_name, req.password, req.role)
     except ValueError as exc:
@@ -480,17 +899,12 @@ def register(req: RegisterRequest, response: Response, request: Request):
 @app.post("/api/auth/login")
 def login(req: LoginRequest, response: Response, request: Request):
     client = request.client.host if request.client else "unknown"
-    now = time.time()
-    attempts = [t for t in LOGIN_ATTEMPTS.get(client, []) if now - t < LOGIN_RATE_WINDOW_SECONDS]
-    if len(attempts) >= LOGIN_RATE_LIMIT:
-        LOGIN_ATTEMPTS[client] = attempts
+    if not allow_auth_attempt(client):
         raise HTTPException(429, "Too many login attempts. Try again in a few minutes.")
-    attempts.append(now)
-    LOGIN_ATTEMPTS[client] = attempts
     user = auth_store.authenticate_user(req.email, req.password)
     if not user:
         raise HTTPException(401, "Email or password is incorrect, or the account is disabled.")
-    LOGIN_ATTEMPTS[client] = []
+    clear_auth_attempts(client)
     token, csrf_token = auth_store.create_session(user["id"])
     set_session_cookie(response, token)
     return {"user": user, "csrf_token": csrf_token}
@@ -537,25 +951,35 @@ def health():
         "max_reference_file_mb": MAX_REFERENCE_FILE_MB,
         "max_reference_files": MAX_REFERENCE_FILES,
         "reference_extensions": sorted(REFERENCE_EXTENSIONS),
+        "max_document_file_mb": MAX_DOCUMENT_FILE_MB,
+        "max_document_files": MAX_DOCUMENT_FILES,
+        "document_extensions": sorted(REFERENCE_EXTENSIONS),
     }
 
 
-def _save_reference_uploads(uploads: list[UploadFile], remaining_bytes: int | None = None) -> list[dict]:
+def _save_reference_uploads(
+    uploads: list[UploadFile],
+    remaining_bytes: int | None = None,
+    max_files: int = MAX_REFERENCE_FILES,
+    max_file_mb: int = MAX_REFERENCE_FILE_MB,
+    file_label: str = "lecturer",
+) -> list[dict]:
     named_uploads = [item for item in uploads if item and (item.filename or "").strip()]
-    if len(named_uploads) > MAX_REFERENCE_FILES:
-        raise HTTPException(400, f"Upload at most {MAX_REFERENCE_FILES} lecturer files.")
+    if len(named_uploads) > max_files:
+        raise HTTPException(400, f"Upload at most {max_files} {file_label} files.")
 
     paths: list[dict] = []
-    max_file_bytes = MAX_REFERENCE_FILE_MB * 1024 * 1024
+    max_file_bytes = max_file_mb * 1024 * 1024
     budget = MAX_UPLOAD_MB * 1024 * 1024 if remaining_bytes is None else remaining_bytes
     total_bytes = 0
     try:
         for upload_file in named_uploads:
-            original_name = os.path.basename(upload_file.filename or "lecturer-material")
+            supplied_name = (upload_file.filename or "document").replace("\\", "/")
+            original_name = os.path.basename(supplied_name) or "document"
             ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
             if ext not in REFERENCE_EXTENSIONS:
                 accepted = ", ".join(sorted(REFERENCE_EXTENSIONS))
-                raise HTTPException(400, f"Unsupported lecturer document '{original_name}'. Use: {accepted}.")
+                raise HTTPException(400, f"Unsupported {file_label} document '{original_name}'. Use: {accepted}.")
 
             path = None
             size = 0
@@ -568,9 +992,9 @@ def _save_reference_uploads(uploads: list[UploadFile], remaining_bytes: int | No
                     size += len(chunk)
                     total_bytes += len(chunk)
                     if size > max_file_bytes:
-                        raise HTTPException(413, f"'{original_name}' is larger than {MAX_REFERENCE_FILE_MB} MB.")
+                        raise HTTPException(413, f"'{original_name}' is larger than {max_file_mb} MB.")
                     if total_bytes > budget:
-                        raise HTTPException(413, f"The combined upload exceeds {MAX_UPLOAD_MB} MB. Reduce the video or lecturer documents.")
+                        raise HTTPException(413, f"The combined upload exceeds {MAX_UPLOAD_MB} MB. Reduce the selected files.")
                     tmp.write(chunk)
 
             if size == 0:
@@ -593,48 +1017,9 @@ def _save_reference_uploads(uploads: list[UploadFile], remaining_bytes: int | No
 
 
 def extract_reference_text(path: str, filename: str) -> str:
-    """Extract text from supported lecturer documents without changing the source file."""
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext == "pdf":
-        from utils.pdf_reader import read_pdf_text
-        text = read_pdf_text(path, with_page_markers=True)
-    elif ext in {"txt", "md"}:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
-            text = file.read()
-    elif ext == "docx":
-        from docx import Document as WordDocument
-        document = WordDocument(path)
-        pieces = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-        for table in document.tables:
-            for row in table.rows:
-                values = [cell.text.strip().replace("\n", " ") for cell in row.cells]
-                if any(values):
-                    pieces.append(" | ".join(values))
-        text = "\n\n".join(pieces)
-    elif ext == "pptx":
-        from pptx import Presentation
-        presentation = Presentation(path)
-        slides = []
-        for slide_number, slide in enumerate(presentation.slides, start=1):
-            pieces = []
-            for shape in slide.shapes:
-                if getattr(shape, "has_text_frame", False) and shape.text.strip():
-                    pieces.append(shape.text.strip())
-                if getattr(shape, "has_table", False):
-                    for row in shape.table.rows:
-                        values = [cell.text.strip().replace("\n", " ") for cell in row.cells]
-                        if any(values):
-                            pieces.append(" | ".join(values))
-            if pieces:
-                slides.append(f"[Slide {slide_number}]\n" + "\n".join(pieces))
-        text = "\n\n".join(slides)
-    else:
-        raise ValueError("Unsupported lecturer document format.")
-
-    text = text.strip()
-    if not text:
-        raise ValueError("No text could be extracted. Scanned PDFs may need OCR before upload.")
-    return text
+    """Compatibility wrapper for document extraction used by lecture uploads."""
+    from utils.document_reader import read_document_text
+    return read_document_text(path, filename)
 
 
 @app.post("/api/lectures/upload")
@@ -663,7 +1048,30 @@ def upload(file: UploadFile = File(...), reference_files: list[UploadFile] = Fil
         except OSError:
             pass
         raise
-    job_id, thread = start_job(path, False, user["id"], notes)
+    job_id, thread = start_job(
+        path, False, user["id"], notes,
+        display_title=uploaded_lecture_title(file.filename),
+    )
+    return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
+
+
+@app.post("/api/lectures/documents")
+def upload_documents(
+    files: list[UploadFile] = File(default=[]),
+    user: dict = Depends(STUDENT_OR_ADMIN),
+):
+    """Create a study workspace from PDF, DOCX, PPTX, TXT or Markdown files."""
+    if not files:
+        raise HTTPException(400, "Choose at least one document to upload.")
+    saved_files = _save_reference_uploads(
+        files,
+        max_files=MAX_DOCUMENT_FILES,
+        max_file_mb=MAX_DOCUMENT_FILE_MB,
+        file_label="document",
+    )
+    if not saved_files:
+        raise HTTPException(400, "Choose at least one supported document.")
+    job_id, thread = start_document_job(saved_files, user["id"])
     return StreamingResponse(job_events(job_id, thread), media_type="application/x-ndjson")
 
 
@@ -697,10 +1105,11 @@ async def from_youtube(request: Request, user: dict = Depends(STUDENT_OR_ADMIN))
 
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str, user: dict = Depends(STUDENT_OR_ADMIN)):
-    job = JOBS.get(job_id)
+    with JOB_LOCK:
+        job = dict(JOBS.get(job_id) or {})
     if not job or (user["role"] != "admin" and job.get("owner_user_id") != user["id"]):
         raise HTTPException(404, "Job not found")
-    return {k: v for k, v in job.items() if k != "owner_user_id"}
+    return {k: v for k, v in job.items() if k not in {"owner_user_id", "created_at", "finished_at"}}
 
 
 # ── Routes: library (My Lectures) ────────────────────────────────────────────
@@ -739,29 +1148,86 @@ def remove(lecture_id: str, user: dict = Depends(STUDENT_OR_ADMIN)):
     RUNTIME.pop(lecture_id, None)
     SUMMARIES.pop(lecture_id, None)
     DETAILED_NOTES.pop(lecture_id, None)
-    for key in [k for k in ENGINES if k[0] == lecture_id]:
-        ENGINES.pop(key, None)
+    with ENGINE_LOCK:
+        for key in [k for k in ENGINES if k[0] == lecture_id]:
+            ENGINES.pop(key, None)
     return {"deleted": lecture_id}
 
 
 # ── Routes: workspace (chat, summary, quiz, evaluation) ──────────────────────
+SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    session_id: str = Field(default="default", max_length=64)
+    session_id: str = Field(default="default", min_length=1, max_length=64)
     response_language: Literal["auto", "English", "Hindi", "Hinglish"] = "auto"
     response_style: Literal["balanced", "simple", "exam", "step_by_step"] = "balanced"
     response_length: Literal["concise", "standard", "detailed"] = "standard"
 
+    @field_validator("question")
+    @classmethod
+    def normalize_question(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Question cannot be empty or whitespace only.")
+        return value
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(SESSION_ID_PATTERN, value):
+            raise ValueError("Session ID may contain only letters, numbers, dots, underscores, colons, and hyphens.")
+        return value
+
 
 def source_payload(docs) -> list[dict]:
-    return [{"text": d.page_content, "time": d.metadata.get("start_time_str")} for d in docs]
+    """Serialize retrieved passages with their original source locations."""
+    payload = []
+    for doc in docs:
+        metadata = doc.metadata or {}
+        text = doc.page_content
+        filename = metadata.get("filename") or metadata.get("source")
+        if filename == "unknown":
+            filename = None
+
+        # Read legacy location markers too, so older Chroma collections remain
+        # useful until the user reprocesses them with the updated chunker.
+        page_number = metadata.get("page_number")
+        if page_number is None:
+            page_match = re.search(r"(?m)^\s*\[Page\s+(\d+)\]", text)
+            page_number = int(page_match.group(1)) if page_match else None
+
+        slide_number = metadata.get("slide_number")
+        if slide_number is None:
+            slide_match = re.search(r"(?m)^\s*\[Slide\s+(\d+)\]", text)
+            slide_number = int(slide_match.group(1)) if slide_match else None
+
+        timestamp = metadata.get("start_time_str")
+        if timestamp is None:
+            time_match = re.search(r"\[(?:(\d{1,3}):)?([0-5]?\d):([0-5]\d)\]", text)
+            timestamp = time_match.group(0)[1:-1] if time_match else None
+
+        payload.append({
+            "text": text,
+            "time": timestamp,
+            "source": (metadata.get("source") if metadata.get("source") != "unknown" else None) or filename,
+            "filename": filename,
+            "source_type": metadata.get("source_type"),
+            "page_number": page_number,
+            "slide_number": slide_number,
+            "chunk_id": metadata.get("document_chunk", metadata.get("chunk_id")),
+        })
+    return payload
 
 
 @app.post("/api/lectures/{lecture_id}/chat")
 def chat(lecture_id: str, req: ChatRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
     """Streams newline-delimited JSON: one 'sources' line, many 'token' lines, then 'done'."""
     require_lecture_access(lecture_id, user)
-    engine = get_engine(lecture_id, req.session_id)
+    enforce_model_request_limit(user["id"])
+    engine = get_engine(lecture_id, req.session_id, user["id"])
     try:
         stream, sources, save = engine.prepare_stream(
             req.question.strip(),
@@ -790,9 +1256,15 @@ def chat(lecture_id: str, req: ChatRequest, user: dict = Depends(STUDENT_OR_ADMI
 
 
 @app.post("/api/lectures/{lecture_id}/chat/reset")
-def reset_chat(lecture_id: str, session_id: str = "default", user: dict = Depends(STUDENT_OR_ADMIN)):
+def reset_chat(
+    lecture_id: str,
+    session_id: str = Query(default="default", min_length=1, max_length=64, pattern=SESSION_ID_PATTERN),
+    user: dict = Depends(STUDENT_OR_ADMIN),
+):
     require_lecture_access(lecture_id, user)
-    ENGINES.pop((lecture_id, session_id), None)
+    key = (str(lecture_id), int(user["id"]), session_id.strip())
+    with ENGINE_LOCK:
+        ENGINES.pop(key, None)
     return {"reset": True}
 
 
@@ -800,6 +1272,7 @@ def reset_chat(lecture_id: str, session_id: str = "default", user: dict = Depend
 def summary(lecture_id: str, refresh: bool = False, user: dict = Depends(STUDENT_OR_ADMIN)):
     require_lecture_access(lecture_id, user)
     if refresh or lecture_id not in SUMMARIES:
+        enforce_model_request_limit(user["id"])
         from features.summarizer import summarize
         docs = get_runtime(lecture_id)["docs"]
         try:
@@ -813,6 +1286,7 @@ def summary(lecture_id: str, refresh: bool = False, user: dict = Depends(STUDENT
 def detailed_notes(lecture_id: str, refresh: bool = False, user: dict = Depends(STUDENT_OR_ADMIN)):
     require_lecture_access(lecture_id, user)
     if refresh or lecture_id not in DETAILED_NOTES:
+        enforce_model_request_limit(user["id"])
         from features.detailed_notes import generate_detailed_notes
         docs = get_runtime(lecture_id)["docs"]
         try:
@@ -829,6 +1303,7 @@ class QuizRequest(BaseModel):
 @app.post("/api/lectures/{lecture_id}/quiz")
 def quiz(lecture_id: str, req: QuizRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
     require_lecture_access(lecture_id, user)
+    enforce_model_request_limit(user["id"])
     from features.quiz_generator import generate_quiz
     docs = get_runtime(lecture_id)["docs"]
     try:
@@ -841,8 +1316,16 @@ def quiz(lecture_id: str, req: QuizRequest, user: dict = Depends(STUDENT_OR_ADMI
 
 
 class EvalItem(BaseModel):
-    question: str
-    ground_truth: str
+    question: str = Field(min_length=1, max_length=2000)
+    ground_truth: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("question", "ground_truth")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field cannot be empty or whitespace only.")
+        return value
 
 
 class EvalRequest(BaseModel):
@@ -852,8 +1335,10 @@ class EvalRequest(BaseModel):
 @app.post("/api/lectures/{lecture_id}/evaluate")
 def evaluate(lecture_id: str, req: EvalRequest, user: dict = Depends(ADMIN_ONLY)):
     require_lecture_access(lecture_id, user)
+    enforce_model_request_limit(user["id"])
     from features.evaluator import quick_evaluate
-    engine = get_engine(lecture_id, "eval-" + uuid.uuid4().hex[:8])  # fresh memory, not the chat's
+    eval_session_id = "eval-" + uuid.uuid4().hex[:8]
+    engine = get_engine(lecture_id, eval_session_id, user["id"])  # fresh, user-scoped memory
     items = [i.model_dump() for i in req.items if i.question.strip() and i.ground_truth.strip()]
     if not items:
         raise HTTPException(400, "Each test row needs both a question and an expected answer.")
@@ -862,8 +1347,8 @@ def evaluate(lecture_id: str, req: EvalRequest, user: dict = Depends(ADMIN_ONLY)
     except Exception as e:
         raise HTTPException(500, f"Evaluation failed. {friendly_error(e)}")
     finally:
-        for k in [k for k in ENGINES if k[0] == lecture_id and k[1].startswith("eval-")]:
-            ENGINES.pop(k, None)
+        with ENGINE_LOCK:
+            ENGINES.pop((str(lecture_id), int(user["id"]), eval_session_id), None)
     return {"scores": scores, "n": len(items)}
 
 

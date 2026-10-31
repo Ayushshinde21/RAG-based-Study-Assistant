@@ -22,6 +22,24 @@ class TestReciprocalRankFusion(unittest.TestCase):
         merged = reciprocal_rank_fusion([doc("x"), doc("y")], [doc("y"), doc("x")])
         self.assertEqual(sorted(d.page_content for d in merged), ["x", "y"])
 
+    def test_identical_text_from_distinct_sources_keeps_both_records(self):
+        first = Document(
+            page_content="The same definition appears here.",
+            metadata={"source": "lecture_a.txt", "chunk_id": 0},
+        )
+        second = Document(
+            page_content="The same definition appears here.",
+            metadata={"source": "lecture_b.txt", "chunk_id": 0},
+        )
+
+        merged = reciprocal_rank_fusion([first], [second])
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(
+            {item.metadata["source"] for item in merged},
+            {"lecture_a.txt", "lecture_b.txt"},
+        )
+
     def test_empty_inputs(self):
         self.assertEqual(reciprocal_rank_fusion([], []), [])
 
