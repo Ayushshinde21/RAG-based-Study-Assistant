@@ -52,6 +52,21 @@
     <aside class="info" id="info" aria-label="Study overview"></aside>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="script.js"></script>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"], ["$$", "$$"]],
+        processEscapes: true,
+        packages: { "[+]": ["ams"] }
+      },
+      options: {
+        skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+      },
+      startup: { typeset: false }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml.js"></script>
+  <script defer src="script.js"></script>
 </body>
 </html>

@@ -123,7 +123,9 @@ function normalizeChatWhitespace(source) {
     // Some model responses contain encoded spaces. Normalize only whitespace
     // entities before Markdown parsing so they do not appear as literal text.
     .replace(/&amp;#(?:x0*20|0*32|0*160);|&amp;nbsp;/gi, " ")
-    .replace(/&#(?:x0*20|0*32|0*160);|&(?:nbsp|ensp|emsp|thinsp);/gi, " ");
+    .replace(/&#(?:x0*20|0*32|0*160);|&(?:nbsp|ensp|emsp|thinsp);/gi, " ")
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ");
 }
 
 function renderRichText(source, options = {}) {
@@ -134,6 +136,9 @@ function renderRichText(source, options = {}) {
   let codeLines = [];
   let inCode = false;
   let codeLanguage = "";
+  let inMathBlock = false;
+  let mathDelimiter = "";
+  let mathLines = [];
   let sectionNumber = 0;
 
   const flushParagraph = () => {
@@ -163,8 +168,24 @@ function renderRichText(source, options = {}) {
     codeLanguage = "";
   };
 
+  const flushMathBlock = () => {
+    const body = mathLines.join("\n").trim();
+    output.push(`<div class="rich-math-block">${esc(`${mathDelimiter[0]}${body}${mathDelimiter[1]}`)}</div>`);
+    mathLines = [];
+    mathDelimiter = "";
+    inMathBlock = false;
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (inMathBlock) {
+      if (line.trim() === mathDelimiter[1]) {
+        flushMathBlock();
+      } else {
+        mathLines.push(line);
+      }
+      continue;
+    }
     if (inCode) {
       if (/^\s*```/.test(line)) {
         flushCode();
@@ -181,6 +202,25 @@ function renderRichText(source, options = {}) {
       flushList();
       inCode = true;
       codeLanguage = fence[1] || "";
+      continue;
+    }
+
+    const trimmedLine = line.trim();
+    const singleLineMath = trimmedLine.match(/^(\$\$)(.+)\1$|^(\\\[)(.+)\\\]$/);
+    if (singleLineMath) {
+      flushParagraph();
+      flushList();
+      const delimiters = singleLineMath[1] ? ["$$", "$$"] : ["\\[", "\\]"];
+      const formula = singleLineMath[2] || singleLineMath[4] || "";
+      output.push(`<div class="rich-math-block">${esc(`${delimiters[0]}${formula}${delimiters[1]}`)}</div>`);
+      continue;
+    }
+    if (trimmedLine === "$$" || trimmedLine === "\\[") {
+      flushParagraph();
+      flushList();
+      inMathBlock = true;
+      mathDelimiter = trimmedLine === "$$" ? ["$$", "$$"] : ["\\[", "\\]"];
+      mathLines = [];
       continue;
     }
 
@@ -204,14 +244,15 @@ function renderRichText(source, options = {}) {
       }
     }
 
-    const heading = line.match(/^\s*(#{1,3})\s+(.+?)\s*$/);
+    const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
     const standaloneLabel = line.trim().match(/^\*\*([^*\n]{2,60})\*\*:?$|^__([^_\n]{2,60})__:?$/);
     if (heading || (standaloneLabel && !options.headingPrefix)) {
       flushParagraph();
       flushList();
       const level = heading ? heading[1].length : 3;
       const label = heading ? heading[2] : (standaloneLabel[1] || standaloneLabel[2]).replace(/:$/, "");
-      const id = options.headingPrefix ? ` id="${options.headingPrefix}-section-${++sectionNumber}"` : "";
+      const isSectionHeading = heading ? heading[1].length >= 2 : true;
+      const id = options.headingPrefix && isSectionHeading ? ` id="${options.headingPrefix}-section-${++sectionNumber}"` : "";
       output.push(`<h${level} class="rich-heading"${id}>${renderInline(label)}</h${level}>`);
       continue;
     }
@@ -255,6 +296,9 @@ function renderRichText(source, options = {}) {
   }
 
   if (inCode) flushCode();
+  if (inMathBlock) {
+    output.push(`<div class="rich-math-block">${esc(mathLines.join("\n"))}</div>`);
+  }
   flushParagraph();
   flushList();
   return output.join("") || '<p class="rich-paragraph">No content available yet.</p>';
@@ -265,21 +309,26 @@ function extractSummarySections(source) {
   const sections = [];
   let inFence = false;
   for (const line of lines) {
-    // Lines inside ``` fences are code, not headings or list items (the renderer skips them too).
     if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
     if (inFence) continue;
-    const heading = line.match(/^#{1,3}\s+(.+)$/);
-    if (heading) {
-      sections.push(heading[1].replace(/\*\*/g, "").replace(/`/g, "").trim());
-      continue;
-    }
-    const item = line.match(/^(\s*)(?:[-*•▪◦]|\d+[.)])\s+(.+)$/);
-    if (!item || item[1].replace(/\t/g, "  ").length >= 2) continue;
-    const boldLead = item[2].match(/^\*\*(.+?)\*\*/);
-    const label = (boldLead ? boldLead[1] : item[2]).replace(/`/g, "").replace(/\*\*/g, "").replace(/\s+[–—:-].*$/, "").trim();
+    const heading = line.match(/^\s*(#{2,6})\s+(.+)$/);
+    if (!heading) continue;
+    const label = heading[2].replace(/\*\*/g, "").replace(/`/g, "").trim();
     if (label) sections.push(label);
   }
   return sections.slice(0, 8);
+}
+
+function typesetMath(container) {
+  if (!container || !window.MathJax) return;
+  const mathJax = window.MathJax;
+  const run = () => {
+    if (typeof mathJax.typesetPromise !== "function") return;
+    try { mathJax.typesetClear?.([container]); } catch {}
+    mathJax.typesetPromise([container]).catch(() => {});
+  };
+  if (mathJax.startup?.promise) mathJax.startup.promise.then(run).catch(() => {});
+  else run();
 }
 
 async function copyText(text, successMessage = "Copied to clipboard") {
@@ -1784,10 +1833,11 @@ function tabSummary(el, alive = () => true) {
           </header>
           <div class="summary-reading-layout">
             <aside class="summary-outline-card"><div class="summary-outline-heading">IN THIS SUMMARY</div><nav class="summary-outline">${outline}</nav><div class="summary-outline-tip"><span>${ico("lightbulb")}</span><div><strong>Study tip</strong><p>Read one section, then try to explain the idea without looking at your notes.</p></div></div></aside>
-            <article id="summary-document" class="summary-document">${renderRichText(text, { headingPrefix: "summary" })}</article>
+            <article id="summary-document" class="summary-document">${renderRichText(text, { headingPrefix: "summary", listItemAnchors: false })}</article>
           </div>
           <footer class="summary-bottom-card"><div class="summary-bottom-icon">${ico("message-circle")}</div><div class="summary-bottom-copy"><strong>Want to understand a concept more deeply?</strong><p>Ask the study assistant to explain a point or walk through an example from this lecture.</p></div><button type="button" class="ghost" id="discuss-summary">Discuss with AI ${ico("arrow-up-right")}</button></footer>
         </section>`;
+      typesetMath(el.querySelector("#summary-document"));
       el.querySelectorAll("[data-summary-target]").forEach((link) => {
         link.addEventListener("click", (event) => {
           event.preventDefault();
@@ -1864,6 +1914,7 @@ function tabDetailedNotes(el, alive = () => true) {
           </div>
           <footer class="summary-bottom-card"><div class="summary-bottom-icon">${ico("message-circle")}</div><div class="summary-bottom-copy"><strong>Need help with a difficult section?</strong><p>Ask the study assistant to explain it step by step or create a worked example based on this lecture.</p></div><button type="button" class="ghost" id="discuss-detailed-notes">Discuss with AI ${ico("arrow-up-right")}</button></footer>
         </section>`;
+      typesetMath(el.querySelector("#detailed-notes-document"));
       el.querySelectorAll("[data-detailed-target]").forEach((link) => {
         link.addEventListener("click", (event) => {
           event.preventDefault();
