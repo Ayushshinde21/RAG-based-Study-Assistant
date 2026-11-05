@@ -34,7 +34,7 @@
       <excludeFolder url="file://$MODULE_DIR$/transcripts" />
       <excludeFolder url="file://$MODULE_DIR$/utils/audio_files" />
     </content>
-    <orderEntry type="jdk" jdkName="Python 3.13 (RAG-based-Study-Assistant)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.10 (RAG-based Study Assistant)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

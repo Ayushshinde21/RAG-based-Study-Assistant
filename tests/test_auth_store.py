@@ -26,6 +26,15 @@ class TestAuthStore(unittest.TestCase):
         self.env_patch.stop()
         self.temp_dir.cleanup()
 
+
+    def test_faculty_account_is_supported(self):
+        user = auth_store.create_user(
+            "faculty@example.com", "Faculty Member", "long-password-123", "faculty"
+        )
+        self.assertEqual(user["role"], "faculty")
+        authenticated = auth_store.authenticate_user("faculty@example.com", "long-password-123")
+        self.assertEqual(authenticated["role"], "faculty")
+
     def test_password_hash_and_session(self):
         user = auth_store.create_user(
             "student@example.com", "Sample Student", "long-password-123", "student"

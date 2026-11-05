@@ -39,7 +39,7 @@ class TestStandaloneDocumentJob(unittest.TestCase):
         fake_chunker.chunk_text = lambda text, source, method: [FakeDocument(text)]
 
         fake_vector_store = types.ModuleType("core.vector_store")
-        fake_vector_store.build_vector_store = lambda docs, reset, collection_name: captured.setdefault("docs", docs) and fake_store
+        fake_vector_store.build_vector_store = lambda docs, reset, collection_name, owner_user_id=None: captured.setdefault("docs", docs) and fake_store
         fake_vector_store.delete_collection = lambda collection_name: None
         fake_vector_store.get_dense_retriever = lambda store, k: ("dense", k)
         fake_vector_store.new_collection_name = lambda: "lecture_document_test"

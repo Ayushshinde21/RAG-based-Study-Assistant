@@ -50,6 +50,9 @@ YOUTUBE_ENABLED = os.getenv("YOUTUBE_ENABLED", "1") == "1"
 
 @asynccontextmanager
 async def lifespan(_app):
+    if os.getenv("VECTOR_STORE_BACKEND", "chroma").strip().lower() == "postgres":
+        from core.vector_store import initialize_vector_store
+        initialize_vector_store()
     # On Cloud Run (WARMUP=1) load every model before the first request,
     # so the first user doesn't wait for them. Skipped locally for fast reloads.
     if os.getenv("WARMUP") == "1":
@@ -200,7 +203,7 @@ def require_roles(*roles: str):
     return dependency
 
 
-STUDENT_OR_ADMIN = require_roles("student", "admin")
+STUDENT_OR_ADMIN = require_roles("student", "faculty", "admin")
 FARMER_ONLY = require_roles("farmer")
 ADMIN_ONLY = require_roles("admin")
 
@@ -237,7 +240,7 @@ def clear_session_cookie(response: Response) -> None:
 def lecture_belongs_to_user(lecture: dict, user: dict) -> bool:
     if user["role"] == "admin":
         return True
-    if user["role"] != "student":
+    if user["role"] not in ("student", "faculty"):
         return False
     try:
         return lecture.get("owner_user_id") is not None and int(lecture["owner_user_id"]) == int(user["id"])
@@ -338,7 +341,10 @@ def save_titles(titles: dict):
 
 def with_title(lecture: dict) -> dict:
     out = dict(lecture)
-    out["title"] = load_titles().get(lecture["id"], lecture.get("title", "Untitled lecture"))
+    if os.getenv("VECTOR_STORE_BACKEND", "chroma").strip().lower() == "postgres":
+        out["title"] = lecture.get("title", "Untitled lecture")
+    else:
+        out["title"] = load_titles().get(lecture["id"], lecture.get("title", "Untitled lecture"))
     return out
 
 
@@ -358,7 +364,10 @@ def get_runtime(lecture_id: str) -> dict:
         if rt:
             return rt
         try:
-            vs = load_vector_store(lecture["collection_name"])
+            vs = load_vector_store(
+                lecture["collection_name"],
+                owner_user_id=lecture.get("owner_user_id"),
+            )
             docs = get_all_docs_from_store(vs)
             if not docs:
                 raise RuntimeError("The saved index for this lecture is empty or missing.")
@@ -519,7 +528,12 @@ def run_job(
                                            new_collection_name, register_lecture)
             from core.bm25_index import build_bm25_retriever
             collection = new_collection_name()
-            vector_store = build_vector_store(docs, reset=True, collection_name=collection)
+            vector_store = build_vector_store(
+                docs,
+                reset=True,
+                collection_name=collection,
+                owner_user_id=owner_user_id,
+            )
             dense = get_dense_retriever(vector_store, k=10)
             bm25 = build_bm25_retriever(docs, k=10)
 
@@ -637,6 +651,7 @@ def run_document_job(job_id: str, uploaded_files: list[dict], owner_user_id: int
                 all_docs,
                 reset=True,
                 collection_name=collection_name,
+                owner_user_id=owner_user_id,
             )
             dense = get_dense_retriever(vector_store, k=10)
             bm25 = build_bm25_retriever(all_docs, k=10)
@@ -680,7 +695,7 @@ def run_document_job(job_id: str, uploaded_files: list[dict], owner_user_id: int
                 if vector_store is not None:
                     vector_store.delete_collection()
                 else:
-                    delete_collection(collection_name)
+                    delete_collection(collection_name, owner_user_id=owner_user_id)
             except Exception:
                 pass
             RUNTIME.pop(collection_name, None)
@@ -874,7 +889,7 @@ class RegisterRequest(BaseModel):
     email: str = Field(min_length=5, max_length=254)
     display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=12, max_length=256)
-    role: Literal["student", "farmer"] = "student"
+    role: Literal["student", "faculty"] = "student"
 
 
 class LoginRequest(BaseModel):
@@ -943,8 +958,12 @@ def change_user_active(user_id: int, req: ActiveUserRequest, user: dict = Depend
 
 @app.get("/api/health")
 def health():
+    from storage.database import database_health
+    database = database_health()
     return {
         "status": "ok",
+        "database": database,
+        "vector_store_backend": os.getenv("VECTOR_STORE_BACKEND", "chroma").strip().lower(),
         "max_upload_mb": MAX_UPLOAD_MB,
         "youtube_enabled": YOUTUBE_ENABLED,
         "youtube_captions_enabled": True,
@@ -1129,11 +1148,17 @@ class RenameRequest(BaseModel):
 @app.patch("/api/lectures/{lecture_id}")
 def rename(lecture_id: str, req: RenameRequest, user: dict = Depends(STUDENT_OR_ADMIN)):
     require_lecture_access(lecture_id, user)
-    with TITLE_LOCK:
-        titles = load_titles()
-        titles[lecture_id] = req.title.strip()
-        save_titles(titles)
-    return {"id": lecture_id, "title": req.title.strip()}
+    title = req.title.strip()
+    if os.getenv("VECTOR_STORE_BACKEND", "chroma").strip().lower() == "postgres":
+        from core.vector_store import rename_lecture
+        if not rename_lecture(lecture_id, title):
+            raise HTTPException(404, "Lecture not found")
+    else:
+        with TITLE_LOCK:
+            titles = load_titles()
+            titles[lecture_id] = title
+            save_titles(titles)
+    return {"id": lecture_id, "title": title}
 
 
 @app.delete("/api/lectures/{lecture_id}")

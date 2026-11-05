@@ -54,14 +54,20 @@ class TestAccessControl(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def legacy_farmer(self, client, email, name):
+        user = auth_store.create_user(email, name, "a-strong-password-2026", "farmer")
+        token, csrf_token = auth_store.create_session(user["id"])
+        client.cookies.set(api.SESSION_COOKIE, token)
+        return {"user": user, "csrf_token": csrf_token}
+
     def test_farm_tenant_isolation_and_role_guards(self):
         farmer_one = self.client()
         farmer_two = self.client()
         student = self.client()
         admin = self.client()
 
-        one = self.signup(farmer_one, "one@example.com", "Farmer One", "farmer")
-        self.signup(farmer_two, "two@example.com", "Farmer Two", "farmer")
+        one = self.legacy_farmer(farmer_one, "one@example.com", "Farmer One")
+        self.legacy_farmer(farmer_two, "two@example.com", "Farmer Two")
         self.signup(student, "student@example.com", "Student", "student")
 
         create = farmer_one.post(
@@ -124,7 +130,7 @@ class TestAccessControl(unittest.TestCase):
 
     def test_authenticated_mutations_require_csrf(self):
         farmer = self.client()
-        self.signup(farmer, "farmer@example.com", "Farmer", "farmer")
+        self.legacy_farmer(farmer, "farmer@example.com", "Farmer")
         response = farmer.post("/api/farms", json={"name": "No CSRF"})
         self.assertEqual(response.status_code, 403)
 
@@ -140,17 +146,31 @@ class TestAccessControl(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 422)
+        farmer_registration = client.post(
+            "/api/auth/register",
+            json={
+                "email": "legacy-farmer@example.com",
+                "display_name": "Legacy Farmer",
+                "password": "a-strong-password-2026",
+                "role": "farmer",
+            },
+        )
+        self.assertEqual(farmer_registration.status_code, 422)
 
-    def test_students_only_list_and_open_owned_lectures(self):
+    def test_students_and_faculty_only_list_and_open_owned_lectures(self):
         student_one = self.client()
         student_two = self.client()
+        faculty = self.client()
         admin = self.client()
         one = self.signup(student_one, "lecture-one@example.com", "Student One", "student")
         two = self.signup(student_two, "lecture-two@example.com", "Student Two", "student")
+        faculty_account = self.signup(faculty, "faculty@example.com", "Faculty Member", "faculty")
+        self.assertEqual(faculty_account["user"]["role"], "faculty")
 
         records = [
             {"id": "owned-one", "title": "Owned one", "owner_user_id": one["user"]["id"], "num_chunks": 1, "created_at": "2026-10-20T10:00:00"},
             {"id": "owned-two", "title": "Owned two", "owner_user_id": two["user"]["id"], "num_chunks": 1, "created_at": "2026-10-20T10:00:00"},
+            {"id": "faculty-owned", "title": "Faculty owned", "owner_user_id": faculty_account["user"]["id"], "num_chunks": 1, "created_at": "2026-10-20T10:00:00"},
             {"id": "legacy", "title": "Legacy record", "owner_user_id": None, "num_chunks": 1, "created_at": "2026-10-19T10:00:00"},
         ]
         fake_store = type("FakeVectorStore", (), {})()
@@ -185,6 +205,12 @@ class TestAccessControl(unittest.TestCase):
                 student_one.get("/api/lectures/owned-one/summary").json()["summary"],
                 "summary for owned lecture",
             )
+            self.assertEqual(
+                [item["id"] for item in faculty.get("/api/lectures").json()],
+                ["faculty-owned"],
+            )
+            self.assertEqual(faculty.get("/api/lectures/owned-one/summary").status_code, 404)
+            self.assertEqual(student_one.get("/api/lectures/faculty-owned/summary").status_code, 404)
 
             admin_login = admin.post(
                 "/api/auth/login",
@@ -193,7 +219,7 @@ class TestAccessControl(unittest.TestCase):
             self.assertEqual(admin_login.status_code, 200)
             self.assertEqual(
                 {item["id"] for item in admin.get("/api/lectures").json()},
-                {"owned-one", "owned-two", "legacy"},
+                {"owned-one", "owned-two", "faculty-owned", "legacy"},
             )
 
             eval_payload = {

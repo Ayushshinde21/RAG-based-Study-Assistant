@@ -47,6 +47,7 @@ playwright-report/
 
 # Vector databases and generated indexes
 chroma_db/
+lecture_titles.json
 chroma/
 vector_store/
 index_store/
@@ -55,7 +56,6 @@ index_store/
 transcripts/
 audio_files/
 uploads/
-storage/
 processed_audio/
 processed_videos/
 

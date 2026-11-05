@@ -39,3 +39,6 @@ numpy
 pypdf
 python-docx
 python-pptx
+
+psycopg[binary]==3.3.8
+pgvector==0.3.6

@@ -6,6 +6,16 @@ SCRIPT = (PROJECT_ROOT / "frontend" / "script.js").read_text(encoding="utf-8")
 STYLES = (PROJECT_ROOT / "frontend" / "style.css").read_text(encoding="utf-8")
 
 
+
+
+class TestFrontendAuthentication(unittest.TestCase):
+    def test_registration_offers_student_and_faculty_only(self):
+        self.assertIn(
+            '<option value="student">Student</option><option value="faculty">Faculty</option>',
+            SCRIPT,
+        )
+        self.assertNotIn('<option value="farmer">', SCRIPT)
+
 class TestFrontendUploadExperience(unittest.TestCase):
     def test_media_documents_and_reference_drop_targets_exist(self):
         self.assertIn('data-drop-target="media"', SCRIPT)

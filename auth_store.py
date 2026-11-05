@@ -1,8 +1,4 @@
-"""Small SQLite-backed account, session, and farm store for local deployments.
-
-For multi-instance production deployments, replace SQLite with a managed database
-and move lecture/vector files to shared durable storage.
-"""
+"""Account, session, and farm storage with SQLite and PostgreSQL backends."""
 from __future__ import annotations
 
 import base64
@@ -18,30 +14,39 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+from storage.database import postgres_connection, postgres_enabled
+
 PASSWORD_ITERATIONS = 310_000
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
-def _db_path() -> str:
-    return os.getenv("AUTH_DB_PATH", "auth.sqlite3")
+class _ConnectionAdapter:
+    def __init__(self, connection, postgres: bool):
+        self.connection = connection
+        self.postgres = postgres
+
+    def execute(self, sql: str, params=()):
+        if self.postgres:
+            sql = sql.replace("?", "%s")
+        return self.connection.execute(sql, params)
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
+@contextmanager
+def _connection():
+    if postgres_enabled():
+        with postgres_connection() as conn:
+            yield _ConnectionAdapter(conn, True)
+        return
+
+    path = os.getenv("AUTH_DB_PATH", "auth.sqlite3")
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
-@contextmanager
-def _connection():
-    conn = _connect()
     try:
-        yield conn
+        yield _ConnectionAdapter(conn, False)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -54,44 +59,137 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def init_auth_db() -> None:
-    with _connection() as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
+def _create_postgres_schema(conn: _ConnectionAdapter) -> None:
+    statements = [
+        """CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('student','faculty','farmer','admin')),
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            csrf_token TEXT NOT NULL,
+            expires_at BIGINT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email))",
+        """CREATE TABLE IF NOT EXISTS farms (
+            id TEXT PRIMARY KEY,
+            owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            crop TEXT NOT NULL DEFAULT '',
+            soil_moisture DOUBLE PRECISION,
+            temperature_c DOUBLE PRECISION,
+            humidity_pct DOUBLE PRECISION,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_farms_owner ON farms(owner_user_id)",
+        """CREATE TABLE IF NOT EXISTS migration_user_id_map (
+            source_user_id BIGINT PRIMARY KEY,
+            target_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+        )""",
+    ]
+    for statement in statements:
+        conn.execute(statement)
+    conn.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
+    conn.execute(
+        "ALTER TABLE users ADD CONSTRAINT users_role_check "
+        "CHECK(role IN ('student','faculty','farmer','admin'))"
+    )
+
+
+def _create_sqlite_schema(conn: _ConnectionAdapter) -> None:
+    statements = [
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('student','faculty','farmer','admin')),
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            csrf_token TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+        """CREATE TABLE IF NOT EXISTS farms (
+            id TEXT PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            crop TEXT NOT NULL DEFAULT '',
+            soil_moisture REAL,
+            temperature_c REAL,
+            humidity_pct REAL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_farms_owner ON farms(owner_user_id)",
+    ]
+    for statement in statements:
+        conn.execute(statement)
+
+
+def _migrate_sqlite_user_roles(conn: _ConnectionAdapter) -> None:
+    raw = conn.connection
+    schema_row = raw.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    schema_sql = (schema_row[0] or "").lower() if schema_row else ""
+    if "'faculty'" in schema_sql:
+        return
+
+    raw.execute("PRAGMA foreign_keys=OFF")
+    try:
+        raw.execute("BEGIN IMMEDIATE")
+        raw.execute(
+            """CREATE TABLE users_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 display_name TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('student','farmer','admin')),
+                role TEXT NOT NULL CHECK(role IN ('student','faculty','farmer','admin')),
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                token_hash TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                csrf_token TEXT NOT NULL,
-                expires_at INTEGER NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-            CREATE TABLE IF NOT EXISTS farms (
-                id TEXT PRIMARY KEY,
-                owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                location TEXT NOT NULL DEFAULT '',
-                crop TEXT NOT NULL DEFAULT '',
-                soil_moisture REAL,
-                temperature_c REAL,
-                humidity_pct REAL,
-                notes TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_farms_owner ON farms(owner_user_id);
-            """
+            )"""
         )
+        raw.execute(
+            """INSERT INTO users_new(id, email, display_name, password_hash, role, is_active, created_at)
+               SELECT id, email, display_name, password_hash, role, is_active, created_at FROM users"""
+        )
+        raw.execute("DROP TABLE users")
+        raw.execute("ALTER TABLE users_new RENAME TO users")
+        raw.commit()
+    except Exception:
+        raw.rollback()
+        raise
+    finally:
+        raw.execute("PRAGMA foreign_keys=ON")
+
+
+def init_auth_db() -> None:
+    with _connection() as conn:
+        if postgres_enabled():
+            _create_postgres_schema(conn)
+        else:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _create_sqlite_schema(conn)
+            _migrate_sqlite_user_roles(conn)
         email = os.getenv("ADMIN_EMAIL", "").strip().lower()
         password = os.getenv("ADMIN_PASSWORD", "")
         if email and password:
@@ -99,16 +197,19 @@ def init_auth_db() -> None:
                 raise RuntimeError("ADMIN_EMAIL must be a valid email address.")
             if len(password) < 12:
                 raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters long.")
-            existing = conn.execute("SELECT id, role, password_hash FROM users WHERE email=?", (email,)).fetchone()
+            existing = conn.execute(
+                "SELECT id, role, password_hash FROM users WHERE email=?",
+                (email,),
+            ).fetchone()
             if existing is None:
                 conn.execute(
-                    "INSERT INTO users(email, display_name, password_hash, role, is_active, created_at) VALUES(?,?,?,?,1,?)",
-                    (email, "Administrator", hash_password(password), "admin", _now()),
+                    "INSERT INTO users(email, display_name, password_hash, role, is_active, created_at) VALUES(?,?,?,?,?,?)",
+                    (email, "Administrator", hash_password(password), "admin", True, _now()),
                 )
             elif existing["role"] != "admin" or not verify_password(password, existing["password_hash"]):
                 conn.execute(
-                    "UPDATE users SET role='admin',password_hash=?,is_active=1 WHERE id=?",
-                    (hash_password(password), existing["id"]),
+                    "UPDATE users SET role='admin',password_hash=?,is_active=? WHERE id=?",
+                    (hash_password(password), True, existing["id"]),
                 )
 
 
@@ -146,6 +247,12 @@ def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_integrity_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    return getattr(exc, "sqlstate", None) == "23505"
+
+
 def create_user(email: str, display_name: str, password: str, role: str = "student") -> dict[str, Any]:
     email = email.strip().lower()
     display_name = display_name.strip()
@@ -155,29 +262,36 @@ def create_user(email: str, display_name: str, password: str, role: str = "stude
         raise ValueError("Name must be between 1 and 100 characters.")
     if len(password) < 12:
         raise ValueError("Password must contain at least 12 characters.")
-    if role not in ("student", "farmer", "admin"):
+    if role not in ("student", "faculty", "farmer", "admin"):
         raise ValueError("Invalid account role.")
     with _connection() as conn:
         try:
-            cur = conn.execute(
-                "INSERT INTO users(email, display_name, password_hash, role, is_active, created_at) VALUES(?,?,?,?,1,?)",
-                (email, display_name, hash_password(password), role, _now()),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("An account with that email already exists.") from exc
-        row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+            if postgres_enabled():
+                row = conn.execute(
+                    "INSERT INTO users(email, display_name, password_hash, role, is_active, created_at) VALUES(?,?,?,?,?,?) RETURNING *",
+                    (email, display_name, hash_password(password), role, True, _now()),
+                ).fetchone()
+            else:
+                cur = conn.execute(
+                    "INSERT INTO users(email, display_name, password_hash, role, is_active, created_at) VALUES(?,?,?,?,?,?)",
+                    (email, display_name, hash_password(password), role, True, _now()),
+                )
+                row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+        except Exception as exc:
+            if _is_integrity_error(exc):
+                raise ValueError("An account with that email already exists.") from exc
+            raise
         return public_user(row)
 
 
 def get_user_by_email(email: str):
     with _connection() as conn:
-        return conn.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE", (email.strip(),)).fetchone()
+        return conn.execute("SELECT * FROM users WHERE lower(email)=lower(?)", (email.strip(),)).fetchone()
 
 
 def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
     row = get_user_by_email(email)
     if row is None:
-        # A fixed dummy hash keeps the unknown-user path from skipping PBKDF2 entirely.
         dummy = "pbkdf2_sha256$310000$c29tZXNhbHQxMjM0NTY3OA==$dGVzdGRpZ2VzdA=="
         verify_password(password, dummy)
         return None
@@ -232,7 +346,7 @@ def list_users() -> list[dict[str, Any]]:
 
 def set_user_active(user_id: int, is_active: bool) -> bool:
     with _connection() as conn:
-        cur = conn.execute("UPDATE users SET is_active=? WHERE id=?", (1 if is_active else 0, user_id))
+        cur = conn.execute("UPDATE users SET is_active=? WHERE id=?", (bool(is_active), user_id))
         if cur.rowcount:
             if not is_active:
                 conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
@@ -250,7 +364,7 @@ def create_farm(owner_user_id: int, data: dict[str, Any]) -> dict[str, Any]:
              data.get("crop", "").strip(), data.get("soil_moisture"), data.get("temperature_c"),
              data.get("humidity_pct"), data.get("notes", "").strip(), now, now),
         )
-    return get_farm(farm_id)  # type: ignore[return-value]
+    return get_farm(farm_id)
 
 
 def get_farm(farm_id: str):

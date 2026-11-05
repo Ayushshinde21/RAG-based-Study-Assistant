@@ -88,4 +88,4 @@ while True:
     print(f"\n🤖 Answer:\n{answer}")
 
 
-#uvicorn api:app --reload --port 8000
+#uvicorn api:app --reload --portInvoke-RestMethod http://localhost:8080/api/health | ConvertTo-Json -Depth 5 8000

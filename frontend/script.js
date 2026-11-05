@@ -517,7 +517,7 @@ function updateShell() {
     $("#profile-name").textContent = currentUser.display_name;
     $("#profile-role").textContent = currentUser.role.charAt(0).toUpperCase() + currentUser.role.slice(1);
     $("#profile-avatar").textContent = (currentUser.display_name || currentUser.email || "U").trim().charAt(0).toUpperCase();
-    $(".topbar-context > span:nth-of-type(2)").textContent = currentUser.role === "admin" ? "ADMIN PORTAL" : currentUser.role === "farmer" ? "FARMER PORTAL" : "STUDENT PORTAL";
+    $(".topbar-context > span:nth-of-type(2)").textContent = currentUser.role === "admin" ? "ADMIN PORTAL" : currentUser.role === "faculty" ? "FACULTY PORTAL" : currentUser.role === "farmer" ? "FARMER PORTAL" : "STUDENT PORTAL";
   }
 }
 
@@ -536,7 +536,7 @@ function renderAuthScreen(mode = "login", message = "") {
           ${isRegister ? `<label>Full name<input name="display_name" required maxlength="100" autocomplete="name" placeholder="Your name"></label>` : ""}
           <label>Email address<input name="email" type="email" required maxlength="254" autocomplete="email" placeholder="you@example.com"></label>
           <label>Password<input name="password" type="password" required minlength="${isRegister ? 12 : 1}" maxlength="256" autocomplete="${isRegister ? "new-password" : "current-password"}" placeholder="${isRegister ? "At least 12 characters" : "Your password"}"></label>
-          ${isRegister ? `<label>Account type<select name="role"><option value="student">Student</option><option value="farmer">Farmer</option></select></label>` : ""}
+          ${isRegister ? `<label>Account type<select name="role"><option value="student">Student</option><option value="faculty">Faculty</option></select></label>` : ""}
           <p class="auth-message" id="auth-message" role="alert" ${message ? "" : "hidden"}>${esc(message)}</p>
           <button class="btn auth-submit" type="submit">${isRegister ? "Create account" : "Sign in"}</button>
         </form>

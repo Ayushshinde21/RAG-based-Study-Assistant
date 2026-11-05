@@ -21,7 +21,6 @@ auth.sqlite3-wal
 *.sqlite-shm
 *.sqlite-wal
 uploads/
-storage/
 tests/
 old/
 app.py
